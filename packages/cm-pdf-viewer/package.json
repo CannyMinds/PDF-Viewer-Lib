@@ -1,0 +1,22 @@
+{
+  "name": "cm-pdf-viewer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.10.0",
+  "dependencies": {
+    "@embedpdf/core": "^1.1.1",
+    "@embedpdf/engines": "^1.1.1",
+    "@embedpdf/plugin-loader": "^1.1.1",
+    "@embedpdf/plugin-render": "^1.1.1",
+    "@embedpdf/plugin-scroll": "^1.1.1",
+    "@embedpdf/plugin-viewport": "^1.1.1"
+  }
+}
