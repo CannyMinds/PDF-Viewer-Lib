@@ -1,70 +1,53 @@
+import { usePDFViewer } from "./usePDFViewer";
 import { EmbedPDF } from "@embedpdf/core/react";
-import { usePdfiumEngine } from "@embedpdf/engines/react";
-import { createPluginRegistration } from '@embedpdf/core';
-import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
-import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
-import { ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
-import { RenderPluginPackage } from "@embedpdf/plugin-render";
-import { useMemo } from 'react';
-
-import { FilePicker } from "@embedpdf/plugin-loader/react";
+// import { FilePicker } from "@embedpdf/plugin-loader/react";
 import { Viewport } from "@embedpdf/plugin-viewport/react";
 import { Scroller } from "@embedpdf/plugin-scroll/react";
 import { RenderLayer } from "@embedpdf/plugin-render/react";
 
+import { useState, useEffect } from 'react';
+import isPasswordProtected from "./utils/isPasswordProtected";
+
 interface PDFViewerProps {
     pdfBuffer?: ArrayBuffer | null;
+    onPasswordRequest?: (fileName?: string) => Promise<string | null>;
 }
 
-function PDFViewer({ pdfBuffer }: PDFViewerProps) {
-    const plugins = useMemo(() => [
-        createPluginRegistration(LoaderPluginPackage, {
-            loadingOptions: {
-                type: "buffer",
-                pdfFile: {
-                    id: new Date().getTime().toString(),
-                    content: pdfBuffer || null,
-                },
-                options: {
-                    password: "",
-                },
-            },
-        }),
-        createPluginRegistration(ViewportPluginPackage, {
-            viewportGap: 10,
-        }),
-        createPluginRegistration(ScrollPluginPackage, {
-            strategy: ScrollStrategy.Vertical,
-        }),
-        createPluginRegistration(RenderPluginPackage),
-    ], [pdfBuffer]);
-    const { engine, isLoading, error } = usePdfiumEngine();
+function PDFViewer({ pdfBuffer, onPasswordRequest }: PDFViewerProps) {
+    const { engine, plugins, isReady, instance, isLoading } = usePDFViewer({
+        pdfBuffer,
+    });
 
-    if (error) {
-        return (
-            <div>
-                Failed to initialize PDF viewer: {error.message}
-            </div>
-        );
-    }
 
-    if (isLoading || !engine) {
-        return 'Loading...';
-    }
+    useEffect(() => {
+        console.log('[PDF Viewer] isLoading: ', isLoading);
 
-    if (!pdfBuffer) {
-        return (
-            <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                height: '100%',
-                color: '#666',
-                fontSize: '16px'
-            }}>
-                No PDF file loaded
-            </div>
-        );
+    }, [isLoading]);
+
+    useEffect(() => {
+        if (pdfBuffer && isPasswordProtected(pdfBuffer)) {
+            async function requestPassword() {
+                let password: string | null = null;
+                if (onPasswordRequest) {
+                    password = await onPasswordRequest();
+                }
+                if (password) {
+                    instance.setPassword(password);
+                    instance.setIsPasswordChecked(true);
+                }
+            }
+
+            if (onPasswordRequest) {
+                requestPassword();
+            }
+
+        } else {
+            instance.setIsPasswordChecked(true);
+        }
+    }, [pdfBuffer]);
+
+    if (!isReady) {
+        return null;
     }
 
     return (
@@ -98,7 +81,7 @@ function PDFViewer({ pdfBuffer }: PDFViewerProps) {
                             />
                         )}
                     </Viewport>
-                    <FilePicker />
+                    {/* <FilePicker /> */}
                 </>
             )}
         </EmbedPDF>
