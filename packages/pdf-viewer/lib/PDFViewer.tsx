@@ -5,15 +5,15 @@ import { Viewport } from "@embedpdf/plugin-viewport/react";
 import { Scroller } from "@embedpdf/plugin-scroll/react";
 import { RenderLayer } from "@embedpdf/plugin-render/react";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactElement } from 'react';
 import isPasswordProtected from "./utils/isPasswordProtected";
 
 interface PDFViewerProps {
-    pdfBuffer?: ArrayBuffer | null;
+    pdfBuffer?: ArrayBuffer | null | undefined;
     onPasswordRequest?: (fileName?: string) => Promise<string | null>;
 }
 
-function PDFViewer({ pdfBuffer, onPasswordRequest }: PDFViewerProps) {
+function PDFViewer({ pdfBuffer, onPasswordRequest }: PDFViewerProps): ReactElement | null {
     const { engine, plugins, isReady, instance, isLoading } = usePDFViewer({
         pdfBuffer,
     });

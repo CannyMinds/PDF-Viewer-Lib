@@ -7,23 +7,33 @@ import { ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
 import { RenderPluginPackage } from "@embedpdf/plugin-render";
 import isPasswordProtected from "./utils/isPasswordProtected";
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
-import { PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
+import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
 
 interface PDFViewerOptions {
-    pdfBuffer?: ArrayBuffer | null;
+    pdfBuffer?: ArrayBuffer | null | undefined;
     password?: string;
 }
 
-interface PDFViewerInstance {
+export interface PDFViewerInstance {
     setPassword: (password: string) => void;
     setZoom: (scale: number) => void;
     getCurrentPage: () => number | null;
     setPage: (page: number) => void;
     getTotalPages: () => number | null;
     setPasswordChecked: (checked: boolean) => void;
+    setIsPasswordChecked: (checked: boolean) => void;
 }
 
-export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewerOptions) {
+export interface PDFViewerHookReturn {
+    engine: any;
+    plugins: any[];
+    isLoading: boolean;
+    error: PDFError | null;
+    isReady: boolean;
+    instance: PDFViewerInstance;
+}
+
+export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewerOptions): PDFViewerHookReturn {
     const { engine, isLoading: engineLoading, error: engineError } = usePdfiumEngine();
     const [error, setError] = useState<PDFError | null>(null);
     const [isReady, setIsReady] = useState(false);
@@ -105,8 +115,25 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
         setPassword: (newPassword: string) => {
             setPassword(newPassword);
         },
+        setPasswordChecked: (checked: boolean) => {
+            setIsPasswordChecked(checked);
+        },
         setIsPasswordChecked: (checked: boolean) => {
             setIsPasswordChecked(checked);
+        },
+        setZoom: (scale: number) => {
+            // TODO: Implement zoom functionality
+        },
+        getCurrentPage: () => {
+            // TODO: Implement get current page
+            return null;
+        },
+        setPage: (page: number) => {
+            // TODO: Implement set page functionality
+        },
+        getTotalPages: () => {
+            // TODO: Implement get total pages
+            return null;
         }
     }), []);
 

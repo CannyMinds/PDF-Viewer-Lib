@@ -4,12 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --filter demo dev",
-    "build": "pnpm --filter @cm/pdf-viewer build && pnpm --filter demo build",
+    "build": "pnpm --filter @cannyminds/pdf-viewer build",
     "lint": "pnpm --recursive lint",
     "test": "pnpm --recursive test"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.0.0"
   }
 }
