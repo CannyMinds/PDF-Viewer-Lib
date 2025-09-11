@@ -1,6 +1,6 @@
 'use client';
 
-import { PDFViewer, usePDFViewer } from '../../cm-pdf-viewer/lib';
+import { PDFViewer, usePDFViewer } from '../../pdf-viewer/lib';
 import { Container, Typography, Box, AppBar, Toolbar, Button, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, TextField } from '@mui/material';
 import { PictureAsPdf, CloudUpload, Clear } from '@mui/icons-material';
 import { useState, useEffect } from 'react';

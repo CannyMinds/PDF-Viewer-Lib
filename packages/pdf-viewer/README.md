@@ -1,6 +1,20 @@
 # @cannyminds/pdf-viewer
 
-A React Headless PDF viewer component built with @embedpdf
+> A React Headless PDF viewer component built with @embedpdf
+
+![Demo Image](./demo.png)
+
+<br />
+
+## Features
+
+- ✅ **Headless Design** - Full control over UI and styling
+- ✅ **Password Protected PDFs** - Built-in support for encrypted PDFs
+- ✅ **TypeScript Support** - Full type definitions included
+- ✅ **Modern React** - Uses hooks and modern React patterns
+- ✅ **Buffer-based** - Works with ArrayBuffer for flexible data loading
+- ✅ **Error Handling** - Comprehensive error reporting
+
 
 ## Installation
 
@@ -10,17 +24,12 @@ npm install @cannyminds/pdf-viewer
 yarn add @cannyminds/pdf-viewer
 # or
 pnpm add @cannyminds/pdf-viewer
+# or
+bun add @cannyminds/pdf-viewer
 ```
 
 The package will automatically install the required @embedpdf dependencies including the PDFium WASM engine.
 
-## Peer Dependencies
-
-Make sure you have React installed in your project:
-
-```bash
-npm install react react-dom
-```
 
 ## Usage
 
@@ -168,16 +177,6 @@ interface PDFError {
   originalError?: any;
 }
 ```
-
-## Features
-
-- ✅ **Headless Design** - Full control over UI and styling
-- ✅ **Password Protected PDFs** - Built-in support for encrypted PDFs
-- ✅ **TypeScript Support** - Full type definitions included
-- ✅ **Modern React** - Uses hooks and modern React patterns
-- ✅ **Buffer-based** - Works with ArrayBuffer for flexible data loading
-- ✅ **Error Handling** - Comprehensive error reporting
-- ✅ **Validation** - PDF buffer validation included
 
 ## Styling
 
