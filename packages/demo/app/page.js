@@ -52,11 +52,11 @@ export default function Page() {
 		setPasswordInput('');
 	};
 
-	const { error, isReady, isLoading, instance } = usePDFViewer({});
+	// const { error, isReady, isLoading, instance } = usePDFViewer({});
 
-    useEffect(() => {
-        console.log('[PDF Error]: ', error);
-    }, [error]);
+    // useEffect(() => {
+    //     console.log('[PDF Error]: ', error);
+    // }, [error]);
 
 	return (
 		<>

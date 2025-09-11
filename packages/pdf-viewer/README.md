@@ -2,7 +2,7 @@
 
 > A React Headless PDF viewer component built with @embedpdf
 
-![Demo Image](./demo.png)
+![Demo Image](https://raw.githubusercontent.com/CannyMinds/PDF-Viewer-Lib/main/packages/pdf-viewer/demo.png)
 
 <br />
 
