@@ -1,6 +1,6 @@
 {
   "name": "@cannyminds/pdf-viewer",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A React Headless PDF viewer component built with @embedpdf",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
