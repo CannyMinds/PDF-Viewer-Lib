@@ -4,8 +4,10 @@ import { EmbedPDF } from "@embedpdf/core/react";
 import { Viewport } from "@embedpdf/plugin-viewport/react";
 import { Scroller } from "@embedpdf/plugin-scroll/react";
 import { RenderLayer } from "@embedpdf/plugin-render/react";
+import { SelectionLayer } from "@embedpdf/plugin-selection/react";
+import { PagePointerProvider } from "@embedpdf/plugin-interaction-manager/react";
 
-import { useState, useEffect, type ReactElement } from 'react';
+import { useEffect, type ReactElement } from 'react';
 import isPasswordProtected from "./utils/isPasswordProtected";
 
 interface PDFViewerProps {
@@ -65,7 +67,7 @@ function PDFViewer({ pdfBuffer, onPasswordRequest }: PDFViewerProps): ReactEleme
                     >
                         {pluginsReady && (
                             <Scroller
-                                renderPage={({ pageIndex, scale, width, height, document }) => (
+                                renderPage={({ pageIndex, scale, width, height, document, rotation }) => (
                                     <div
                                         key={document?.id}
                                         style={{
@@ -73,9 +75,15 @@ function PDFViewer({ pdfBuffer, onPasswordRequest }: PDFViewerProps): ReactEleme
                                             height,
                                             position: "relative",
                                             backgroundColor: "white",
+                                            userSelect: "none",
+                                            WebkitUserSelect: "none",
                                         }}
+                                        draggable={false}
                                     >
-                                        <RenderLayer pageIndex={pageIndex} />
+                                        <PagePointerProvider pageIndex={pageIndex} pageWidth={width} pageHeight={height} rotation={rotation || 0} scale={scale}>
+                                            <RenderLayer pageIndex={pageIndex} scale={scale} style={{ pointerEvents: 'none' }} />
+                                            <SelectionLayer pageIndex={pageIndex} scale={scale} />
+                                        </PagePointerProvider>
                                     </div>
                                 )}
                             />

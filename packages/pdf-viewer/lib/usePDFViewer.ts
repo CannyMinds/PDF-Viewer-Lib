@@ -5,6 +5,8 @@ import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
 import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
 import { ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
 import { RenderPluginPackage } from "@embedpdf/plugin-render";
+import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
+import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-manager";
 import isPasswordProtected from "./utils/isPasswordProtected";
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
 import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
@@ -107,7 +109,9 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             createPluginRegistration(ScrollPluginPackage, {
                 strategy: ScrollStrategy.Vertical,
             }),
+            createPluginRegistration(InteractionManagerPluginPackage),
             createPluginRegistration(RenderPluginPackage),
+            createPluginRegistration(SelectionPluginPackage),
         ];
     }, [pdfBuffer, password, isReady]);
 
