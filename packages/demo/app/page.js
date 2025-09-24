@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import { PictureAsPdf, CloudUpload, Clear } from "@mui/icons-material";
 import { useState, useEffect, useRef } from "react";
+import SearchComponent from "../components/SearchComponent";
 
 export default function Page() {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -162,13 +163,19 @@ export default function Page() {
               border: 1,
               borderColor: "divider",
               borderRadius: 1,
+              overflow: "hidden",
             }}
           >
-            <PDFViewer
-              ref={pdfViewerRef}
-              pdfBuffer={pdfBuffer}
-              onPasswordRequest={handlePasswordRequest}
-            />
+            {pdfBuffer && (
+              <SearchComponent viewerRef={pdfViewerRef} />
+            )}
+            <div style={{ height: pdfBuffer ? 'calc(100% - 60px)' : '100%' }}>
+              <PDFViewer
+                ref={pdfViewerRef}
+                pdfBuffer={pdfBuffer}
+                onPasswordRequest={handlePasswordRequest}
+              />
+            </div>
           </Box>
         </Box>
       </Container>

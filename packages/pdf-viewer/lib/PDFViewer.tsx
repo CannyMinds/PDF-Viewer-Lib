@@ -14,14 +14,22 @@ import {
   RenderPluginPackage,
 } from "@embedpdf/plugin-render/react";
 import { SelectionLayer } from "@embedpdf/plugin-selection/react";
+import { SearchLayer } from "@embedpdf/plugin-search/react";
 import {
   InteractionManagerPluginPackage,
   PagePointerProvider,
 } from "@embedpdf/plugin-interaction-manager/react";
 import { useZoom, ZoomMode, ZoomPluginPackage } from "@embedpdf/plugin-zoom/react";
+import { useSearch } from "@embedpdf/plugin-search/react";
 
 // Re-export for consuming apps
 export { ZoomMode };
+export type { SearchState } from "@embedpdf/plugin-search";
+export type { SearchResult, SearchAllPagesResult, MatchFlag } from "@embedpdf/models";
+
+// Import types for internal use
+import type { SearchAllPagesResult } from "@embedpdf/models";
+import type { SearchState } from "@embedpdf/plugin-search";
 
 import {
   useEffect,
@@ -37,6 +45,7 @@ import { usePdfiumEngine } from "@embedpdf/engines/react";
 import { createPluginRegistration } from "@embedpdf/core";
 import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
+import { SearchPluginPackage } from "@embedpdf/plugin-search";
 
 interface PDFViewerProps {
   pdfBuffer?: ArrayBuffer | null | undefined;
@@ -60,11 +69,22 @@ export interface PDFViewerRef {
     clearSelection: () => void;
     getSelectedText: () => string;
   };
+  search: {
+    searchText: (keyword: string) => Promise<SearchAllPagesResult | null>;
+    nextResult: () => number;
+    previousResult: () => number;
+    goToResult: (index: number) => number;
+    stopSearch: () => void;
+    startSearch: () => void;
+    getSearchState: () => SearchState | null;
+    setShowAllResults: (show: boolean) => void;
+  };
 }
 
 // Internal component that has access to plugin hooks
 const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
   const zoom = useZoom();
+  const search = useSearch();
   // TODO: Add other plugin hooks when available
   // const scroll = useScroll();
   // const selection = useSelection();
@@ -120,7 +140,55 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
         return '';
       },
     },
-  }), [zoom]);
+    search: {
+      searchText: async (keyword: string) => {
+        if (search.provides) {
+          const task = search.provides.searchAllPages(keyword);
+          return task.toPromise();
+        }
+        return null;
+      },
+      nextResult: () => {
+        if (search.provides) {
+          return search.provides.nextResult();
+        }
+        return -1;
+      },
+      previousResult: () => {
+        if (search.provides) {
+          return search.provides.previousResult();
+        }
+        return -1;
+      },
+      goToResult: (index: number) => {
+        if (search.provides) {
+          return search.provides.goToResult(index);
+        }
+        return -1;
+      },
+      stopSearch: () => {
+        if (search.provides) {
+          search.provides.stopSearch();
+        }
+      },
+      startSearch: () => {
+        if (search.provides) {
+          search.provides.startSearch();
+        }
+      },
+      getSearchState: () => {
+        if (search.provides) {
+          return search.provides.getState();
+        }
+        return null;
+      },
+      setShowAllResults: (show: boolean) => {
+        if (search.provides) {
+          search.provides.setShowAllResults(show);
+        }
+      },
+    },
+  }), [zoom, search]);
 
   const renderPage = useCallback(({
     pageIndex,
@@ -150,6 +218,11 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
         scale={scale}
       >
         <RenderLayer
+          pageIndex={pageIndex}
+          scale={scale}
+          style={{ pointerEvents: "none" }}
+        />
+        <SearchLayer
           pageIndex={pageIndex}
           scale={scale}
           style={{ pointerEvents: "none" }}
@@ -217,6 +290,7 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
       }),
       createPluginRegistration(RenderPluginPackage),
       createPluginRegistration(SelectionPluginPackage),
+      createPluginRegistration(SearchPluginPackage),
     ];
   }, [pdfBuffer, password, isReady, engine]);
 
