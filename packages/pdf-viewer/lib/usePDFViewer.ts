@@ -7,6 +7,7 @@ import { ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
 import { RenderPluginPackage } from "@embedpdf/plugin-render";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-manager";
+import { ZoomPluginPackage } from "@embedpdf/plugin-zoom";
 import isPasswordProtected from "./utils/isPasswordProtected";
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
 import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
@@ -18,7 +19,9 @@ interface PDFViewerOptions {
 
 export interface PDFViewerInstance {
     setPassword: (password: string) => void;
-    setZoom: (scale: number) => void;
+    zoomIn: () => void;
+    zoomOut: () => void;
+    requestZoom: (level: number) => void;
     getCurrentPage: () => number | null;
     setPage: (page: number) => void;
     getTotalPages: () => number | null;
@@ -110,6 +113,11 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
                 strategy: ScrollStrategy.Vertical,
             }),
             createPluginRegistration(InteractionManagerPluginPackage),
+            createPluginRegistration(ZoomPluginPackage, {
+                defaultZoomLevel: 1.0,
+                minZoom: 0.2,
+                maxZoom: 5.0,
+            }),
             createPluginRegistration(RenderPluginPackage),
             createPluginRegistration(SelectionPluginPackage),
         ];
@@ -125,8 +133,14 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
         setIsPasswordChecked: (checked: boolean) => {
             setIsPasswordChecked(checked);
         },
-        setZoom: (scale: number) => {
-            // TODO: Implement zoom functionality
+        zoomIn: () => {
+            // Will be implemented via component bridge
+        },
+        zoomOut: () => {
+            // Will be implemented via component bridge
+        },
+        requestZoom: (level: number) => {
+            // Will be implemented via component bridge
         },
         getCurrentPage: () => {
             // TODO: Implement get current page
