@@ -15,7 +15,7 @@ import {
   DialogActions,
   TextField,
 } from "@mui/material";
-import { PictureAsPdf, CloudUpload, Clear } from "@mui/icons-material";
+import { PictureAsPdf, CloudUpload, Clear, NavigateBefore, NavigateNext, FirstPage, LastPage, ZoomIn, ZoomOut, FitScreen, ZoomOutMap } from "@mui/icons-material";
 import { useState, useEffect, useRef } from "react";
 import SearchComponent from "../components/SearchComponent";
 
@@ -25,7 +25,26 @@ export default function Page() {
   const [showPasswordDialog, setShowPasswordDialog] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordResolver, setPasswordResolver] = useState(null);
+  const [documentInfo, setDocumentInfo] = useState(null);
   const pdfViewerRef = useRef(null);
+
+  // Update document info periodically
+  useEffect(() => {
+    if (!pdfBuffer || !pdfViewerRef.current) return;
+
+    const updateInfo = () => {
+      if (pdfViewerRef.current?.document) {
+        const info = pdfViewerRef.current.document.getDocumentInfo();
+        setDocumentInfo(info);
+      }
+    };
+
+    // Update immediately and then more frequently for real-time updates
+    updateInfo();
+    const interval = setInterval(updateInfo, 100); // More frequent updates
+
+    return () => clearInterval(interval);
+  }, [pdfBuffer]);
 
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
@@ -127,33 +146,124 @@ export default function Page() {
             minHeight: "85vh",
           }}
         >
-          <Button onClick={() => console.log(pdfViewerRef.current.zoom.getZoom())}>Test Btn</Button>
-          {/* Zoom Controls */}
+
+          {/* Enhanced Navigation & Zoom Controls */}
           {pdfBuffer && (
             <Box
-              sx={{ display: "flex", gap: 1, mb: 1, justifyContent: "center" }}
+              sx={{
+                display: "flex",
+                gap: 1,
+                mb: 1,
+                justifyContent: "center",
+                flexWrap: "wrap",
+                alignItems: "center"
+              }}
             >
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={() => pdfViewerRef.current?.zoom.zoomOut()}
-              >
-                Zoom Out
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={() => pdfViewerRef.current?.zoom.resetZoom()}
-              >
-                100%
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={() => pdfViewerRef.current?.zoom.zoomIn()}
-              >
-                Zoom In
-              </Button>
+              {/* Current Page Info */}
+              {documentInfo && (
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                    px: 2,
+                    py: 1,
+                    backgroundColor: "primary.main",
+                    color: "white",
+                    borderRadius: 1,
+                    fontWeight: "bold"
+                  }}
+                >
+                  Page {documentInfo.currentPage} of {documentInfo.totalPages}
+                </Box>
+              )}
+              {/* Navigation Controls */}
+              <Box sx={{ display: "flex", gap: 0.5 }}>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.navigation.goToFirstPage()}
+                  title="First Page"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <FirstPage />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.navigation.previousPage()}
+                  title="Previous Page"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <NavigateBefore />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.navigation.nextPage()}
+                  title="Next Page"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <NavigateNext />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.navigation.goToLastPage()}
+                  title="Last Page"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <LastPage />
+                </IconButton>
+              </Box>
+
+              {/* Zoom Controls */}
+              <Box sx={{ display: "flex", gap: 0.5 }}>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.zoom.zoomOut()}
+                  title="Zoom Out"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <ZoomOut />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.zoom.zoomIn()}
+                  title="Zoom In"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <ZoomIn />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.zoom.fitToPage()}
+                  title="Fit to Page"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <FitScreen />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  onClick={() => pdfViewerRef.current?.zoom.fitToWidth()}
+                  title="Fit to Width"
+                  sx={{ border: 1, borderColor: "divider" }}
+                >
+                  <ZoomOutMap />
+                </IconButton>
+              </Box>
+
+              {/* Page Jump */}
+              <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => {
+                    const page = prompt("Go to page:", documentInfo?.currentPage || 1);
+                    if (page && !isNaN(page)) {
+                      pdfViewerRef.current?.navigation.goToPage(parseInt(page));
+                    }
+                  }}
+                >
+                  Go to Page
+                </Button>
+              </Box>
             </Box>
           )}
           <Box
@@ -169,7 +279,7 @@ export default function Page() {
             {pdfBuffer && (
               <SearchComponent viewerRef={pdfViewerRef} />
             )}
-            <div style={{ height: pdfBuffer ? 'calc(100% - 60px)' : '100%' }}>
+            <div style={{ height: pdfBuffer ? 'calc(100% - 120px)' : '100%' }}>
               <PDFViewer
                 ref={pdfViewerRef}
                 pdfBuffer={pdfBuffer}

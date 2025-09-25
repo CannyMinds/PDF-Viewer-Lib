@@ -20,15 +20,34 @@ export default function SearchComponent({ viewerRef }) {
 
     setIsSearching(true);
     try {
-      console.log('searchQuery', searchQuery);
       
       const results = await viewerRef.current.search.searchText(searchQuery);
-      console.log('results', results);
       setSearchResults(results);
       if (results && results.results && results.results.length > 0) {
         setCurrentResultIndex(0);
         // Start search session to activate result highlighting
         viewerRef.current.search.startSearch();
+
+        // Navigate to the first result using proper coordinates
+        const firstResult = results.results[0];
+
+        // Use EmbedPDF's coordinate-based scrolling
+        if (firstResult && firstResult.rects && firstResult.rects.length > 0) {
+          const minCoordinates = firstResult.rects.reduce(
+            (min, rect) => ({
+              x: Math.min(min.x, rect.origin.x),
+              y: Math.min(min.y, rect.origin.y),
+            }),
+            { x: Infinity, y: Infinity },
+          );
+
+          // Use coordinate-based scrolling directly
+          viewerRef.current.scroll.scrollToPage({
+            pageNumber: firstResult.pageIndex + 1,
+            pageCoordinates: minCoordinates,
+            center: true,
+          });
+        }
       }
     } catch (error) {
       console.error('Search error:', error);
@@ -38,16 +57,62 @@ export default function SearchComponent({ viewerRef }) {
   };
 
   const handleNextResult = () => {
-    if (viewerRef.current) {
+    if (viewerRef.current && searchResults) {
       const newIndex = viewerRef.current.search.nextResult();
       setCurrentResultIndex(newIndex);
+
+      // If EmbedPDF doesn't auto-navigate, do it manually
+      if (newIndex >= 0 && searchResults.results && searchResults.results[newIndex]) {
+        const result = searchResults.results[newIndex];
+        console.log('Current result data:', result);
+
+        // Use coordinate-based scrolling for precise positioning
+        if (result.rects && result.rects.length > 0) {
+          const minCoordinates = result.rects.reduce(
+            (min, rect) => ({
+              x: Math.min(min.x, rect.origin.x),
+              y: Math.min(min.y, rect.origin.y),
+            }),
+            { x: Infinity, y: Infinity },
+          );
+
+          viewerRef.current.scroll.scrollToPage({
+            pageNumber: result.pageIndex + 1,
+            pageCoordinates: minCoordinates,
+            center: true,
+          });
+        }
+      }
     }
   };
 
   const handlePreviousResult = () => {
-    if (viewerRef.current) {
+    if (viewerRef.current && searchResults) {
       const newIndex = viewerRef.current.search.previousResult();
       setCurrentResultIndex(newIndex);
+
+      // If EmbedPDF doesn't auto-navigate, do it manually
+      if (newIndex >= 0 && searchResults.results && searchResults.results[newIndex]) {
+        const result = searchResults.results[newIndex];
+        console.log('Current result data:', result);
+
+        // Use coordinate-based scrolling for precise positioning
+        if (result.rects && result.rects.length > 0) {
+          const minCoordinates = result.rects.reduce(
+            (min, rect) => ({
+              x: Math.min(min.x, rect.origin.x),
+              y: Math.min(min.y, rect.origin.y),
+            }),
+            { x: Infinity, y: Infinity },
+          );
+
+          viewerRef.current.scroll.scrollToPage({
+            pageNumber: result.pageIndex + 1,
+            pageCoordinates: minCoordinates,
+            center: true,
+          });
+        }
+      }
     }
   };
 
@@ -119,6 +184,16 @@ export default function SearchComponent({ viewerRef }) {
             variant="outlined"
             color={resultCount > 0 ? 'primary' : 'default'}
           />
+
+          {/* Show current result page */}
+          {resultCount > 0 && searchResults && currentResultIndex >= 0 && searchResults.results[currentResultIndex] && (
+            <Chip
+              label={`Page ${searchResults.results[currentResultIndex].pageIndex + 1 || '?'}`}
+              size="small"
+              variant="filled"
+              color="secondary"
+            />
+          )}
 
           {resultCount > 0 && (
             <>

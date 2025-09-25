@@ -21,6 +21,7 @@ import {
 } from "@embedpdf/plugin-interaction-manager/react";
 import { useZoom, ZoomMode, ZoomPluginPackage } from "@embedpdf/plugin-zoom/react";
 import { useSearch } from "@embedpdf/plugin-search/react";
+import { useScroll } from "@embedpdf/plugin-scroll/react";
 
 // Re-export for consuming apps
 export { ZoomMode };
@@ -59,11 +60,17 @@ export interface PDFViewerRef {
     setZoom: (level: number) => void;
     resetZoom: () => void;
     getZoom: () => number | ZoomMode;
+    fitToWidth: () => void;
+    fitToPage: () => void;
   };
   navigation: {
     goToPage: (page: number) => void;
     getCurrentPage: () => number;
     getTotalPages: () => number;
+    nextPage: () => void;
+    previousPage: () => void;
+    goToFirstPage: () => void;
+    goToLastPage: () => void;
   };
   selection: {
     clearSelection: () => void;
@@ -79,15 +86,27 @@ export interface PDFViewerRef {
     getSearchState: () => SearchState | null;
     setShowAllResults: (show: boolean) => void;
   };
+  document: {
+    isReady: () => boolean;
+    isLoading: () => boolean;
+    hasPassword: () => boolean;
+    getDocumentInfo: () => {
+      currentPage: number;
+      totalPages: number;
+      zoomLevel: number | ZoomMode;
+      hasActiveSearch: boolean;
+    };
+  };
+  scroll: {
+    scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => void;
+  };
 }
 
 // Internal component that has access to plugin hooks
-const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
+const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean }>(({ isReady, isLoading, hasPassword }, ref) => {
   const zoom = useZoom();
   const search = useSearch();
-  // TODO: Add other plugin hooks when available
-  // const scroll = useScroll();
-  // const selection = useSelection();
+  const scroll = useScroll();
 
   useImperativeHandle(ref, () => ({
     zoom: {
@@ -111,22 +130,59 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
           zoom.provides.requestZoom(ZoomMode.FitPage);
         }
       },
+      fitToWidth: () => {
+        if (zoom.provides) {
+          zoom.provides.requestZoom(ZoomMode.FitWidth);
+        }
+      },
+      fitToPage: () => {
+        if (zoom.provides) {
+          zoom.provides.requestZoom(ZoomMode.FitPage);
+        }
+      },
       getZoom: () => zoom.state?.zoomLevel || 1.0,
     },
     navigation: {
-      goToPage: (_page: number) => {
-        // TODO: Implement when scroll plugin hook is available
-        console.warn('goToPage not yet implemented');
+      goToPage: (page: number) => {
+        if (scroll.provides) {
+          scroll.provides.scrollToPage({ pageNumber: page });
+        }
       },
       getCurrentPage: () => {
-        // TODO: Implement when scroll plugin hook is available
-        console.warn('getCurrentPage not yet implemented');
+        if (scroll.state) {
+          return scroll.state.currentPage || 1; // Use currentPage property
+        }
         return 1;
       },
       getTotalPages: () => {
-        // TODO: Implement when scroll plugin hook is available
-        console.warn('getTotalPages not yet implemented');
+        if (scroll.state) {
+          return scroll.state.totalPages || 1;
+        }
         return 1;
+      },
+      nextPage: () => {
+        const currentPage = scroll.state?.currentPage || 1;
+        const totalPages = scroll.state?.totalPages || 1;
+        if (currentPage < totalPages && scroll.provides) {
+          scroll.provides.scrollToPage({ pageNumber: currentPage + 1 });
+        }
+      },
+      previousPage: () => {
+        const currentPage = scroll.state?.currentPage || 1;
+        if (currentPage > 1 && scroll.provides) {
+          scroll.provides.scrollToPage({ pageNumber: currentPage - 1 });
+        }
+      },
+      goToFirstPage: () => {
+        if (scroll.provides) {
+          scroll.provides.scrollToPage({ pageNumber: 1 });
+        }
+      },
+      goToLastPage: () => {
+        const totalPages = scroll.state?.totalPages || 1;
+        if (scroll.provides) {
+          scroll.provides.scrollToPage({ pageNumber: totalPages });
+        }
       },
     },
     selection: {
@@ -188,7 +244,25 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
         }
       },
     },
-  }), [zoom, search]);
+    document: {
+      isReady: () => isReady,
+      isLoading: () => isLoading,
+      hasPassword: () => hasPassword,
+      getDocumentInfo: () => ({
+        currentPage: scroll.state?.currentPage || 1,
+        totalPages: scroll.state?.totalPages || 1,
+        zoomLevel: zoom.state?.zoomLevel || 1.0,
+        hasActiveSearch: Boolean(search.state),
+      }),
+    },
+    scroll: {
+      scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => {
+        if (scroll.provides) {
+          scroll.provides.scrollToPage(options);
+        }
+      },
+    },
+  }), [zoom, search, scroll, isReady, isLoading, hasPassword]);
 
   const renderPage = useCallback(({
     pageIndex,
@@ -335,7 +409,12 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
 
   return (
     <EmbedPDF engine={engine} plugins={plugins}>
-      <PDFContent ref={ref} />
+      <PDFContent
+        ref={ref}
+        isReady={isReady}
+        isLoading={engineLoading}
+        hasPassword={Boolean(password) || isPasswordProtected(pdfBuffer || new ArrayBuffer(0))}
+      />
     </EmbedPDF>
   );
 });
