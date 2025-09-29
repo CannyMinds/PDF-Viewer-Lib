@@ -50,7 +50,7 @@ export default function SearchComponent({ viewerRef }) {
         }
       }
     } catch (error) {
-      console.error('Search error:', error);
+      // Search error occurred
     } finally {
       setIsSearching(false);
     }
@@ -64,7 +64,7 @@ export default function SearchComponent({ viewerRef }) {
       // If EmbedPDF doesn't auto-navigate, do it manually
       if (newIndex >= 0 && searchResults.results && searchResults.results[newIndex]) {
         const result = searchResults.results[newIndex];
-        console.log('Current result data:', result);
+        // Navigate to current result
 
         // Use coordinate-based scrolling for precise positioning
         if (result.rects && result.rects.length > 0) {
@@ -94,7 +94,7 @@ export default function SearchComponent({ viewerRef }) {
       // If EmbedPDF doesn't auto-navigate, do it manually
       if (newIndex >= 0 && searchResults.results && searchResults.results[newIndex]) {
         const result = searchResults.results[newIndex];
-        console.log('Current result data:', result);
+        // Navigate to current result
 
         // Use coordinate-based scrolling for precise positioning
         if (result.rects && result.rects.length > 0) {

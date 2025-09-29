@@ -19,14 +19,30 @@ import {
   InteractionManagerPluginPackage,
   PagePointerProvider,
 } from "@embedpdf/plugin-interaction-manager/react";
-import { useZoom, ZoomMode, ZoomPluginPackage } from "@embedpdf/plugin-zoom/react";
+import {
+  useZoom,
+  ZoomMode,
+  ZoomPluginPackage,
+} from "@embedpdf/plugin-zoom/react";
 import { useSearch } from "@embedpdf/plugin-search/react";
 import { useScroll } from "@embedpdf/plugin-scroll/react";
+import {
+  AnnotationLayer,
+  useAnnotationCapability,
+} from "@embedpdf/plugin-annotation/react";
+import {
+  useExportCapability,
+  useExportPlugin,
+} from "@embedpdf/plugin-export/react";
 
 // Re-export for consuming apps
 export { ZoomMode };
 export type { SearchState } from "@embedpdf/plugin-search";
-export type { SearchResult, SearchAllPagesResult, MatchFlag } from "@embedpdf/models";
+export type {
+  SearchResult,
+  SearchAllPagesResult,
+  MatchFlag,
+} from "@embedpdf/models";
 
 // Import types for internal use
 import type { SearchAllPagesResult } from "@embedpdf/models";
@@ -47,6 +63,9 @@ import { createPluginRegistration } from "@embedpdf/core";
 import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
+import { AnnotationPluginPackage } from "@embedpdf/plugin-annotation";
+import { HistoryPluginPackage } from "@embedpdf/plugin-history";
+import { ExportPluginPackage } from "@embedpdf/plugin-export";
 
 interface PDFViewerProps {
   pdfBuffer?: ArrayBuffer | null | undefined;
@@ -96,215 +115,308 @@ export interface PDFViewerRef {
       zoomLevel: number | ZoomMode;
       hasActiveSearch: boolean;
     };
+    download: (
+      filename?: string,
+      includeAnnotations?: boolean
+    ) => Promise<void>;
   };
   scroll: {
-    scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => void;
+    scrollToPage: (options: {
+      pageNumber: number;
+      pageCoordinates?: { x: number; y: number };
+      center?: boolean;
+    }) => void;
+  };
+  annotations: {
+    setActiveTool: (toolId: string | null) => void;
+    getActiveTool: () => any;
+    getSelectedAnnotation: () => any;
+    deleteAnnotation: (pageIndex: number, id: string) => void;
+    deleteSelected: () => void;
+    getProvider: () => any;
   };
 }
 
 // Internal component that has access to plugin hooks
-const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean }>(({ isReady, isLoading, hasPassword }, ref) => {
+const PDFContent = forwardRef<
+  PDFViewerRef,
+  { isReady: boolean; isLoading: boolean; hasPassword: boolean }
+>(({ isReady, isLoading, hasPassword }, ref) => {
   const zoom = useZoom();
   const search = useSearch();
   const scroll = useScroll();
+  const annotationCapability = useAnnotationCapability();
+  const exportCapability = useExportCapability();
+  const exportPlugin = useExportPlugin();
 
-  useImperativeHandle(ref, () => ({
-    zoom: {
-      zoomIn: () => {
-        if (zoom.provides) {
-          zoom.provides.zoomIn();
-        }
-      },
-      zoomOut: () => {
-        if (zoom.provides) {
-          zoom.provides.zoomOut();
-        }
-      },
-      setZoom: (level: number) => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(level);
-        }
-      },
-      resetZoom: () => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(ZoomMode.FitPage);
-        }
-      },
-      fitToWidth: () => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(ZoomMode.FitWidth);
-        }
-      },
-      fitToPage: () => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(ZoomMode.FitPage);
-        }
-      },
-      getZoom: () => zoom.state?.zoomLevel || 1.0,
-    },
-    navigation: {
-      goToPage: (page: number) => {
-        if (scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: page });
-        }
-      },
-      getCurrentPage: () => {
-        if (scroll.state) {
-          return scroll.state.currentPage || 1; // Use currentPage property
-        }
-        return 1;
-      },
-      getTotalPages: () => {
-        if (scroll.state) {
-          return scroll.state.totalPages || 1;
-        }
-        return 1;
-      },
-      nextPage: () => {
-        const currentPage = scroll.state?.currentPage || 1;
-        const totalPages = scroll.state?.totalPages || 1;
-        if (currentPage < totalPages && scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: currentPage + 1 });
-        }
-      },
-      previousPage: () => {
-        const currentPage = scroll.state?.currentPage || 1;
-        if (currentPage > 1 && scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: currentPage - 1 });
-        }
-      },
-      goToFirstPage: () => {
-        if (scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: 1 });
-        }
-      },
-      goToLastPage: () => {
-        const totalPages = scroll.state?.totalPages || 1;
-        if (scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: totalPages });
-        }
-      },
-    },
-    selection: {
-      clearSelection: () => {
-        // TODO: Implement when selection plugin hook is available
-        console.warn('clearSelection not yet implemented');
-      },
-      getSelectedText: () => {
-        // TODO: Implement when selection plugin hook is available
-        console.warn('getSelectedText not yet implemented');
-        return '';
-      },
-    },
-    search: {
-      searchText: async (keyword: string) => {
-        if (search.provides) {
-          const task = search.provides.searchAllPages(keyword);
-          return task.toPromise();
-        }
-        return null;
-      },
-      nextResult: () => {
-        if (search.provides) {
-          return search.provides.nextResult();
-        }
-        return -1;
-      },
-      previousResult: () => {
-        if (search.provides) {
-          return search.provides.previousResult();
-        }
-        return -1;
-      },
-      goToResult: (index: number) => {
-        if (search.provides) {
-          return search.provides.goToResult(index);
-        }
-        return -1;
-      },
-      stopSearch: () => {
-        if (search.provides) {
-          search.provides.stopSearch();
-        }
-      },
-      startSearch: () => {
-        if (search.provides) {
-          search.provides.startSearch();
-        }
-      },
-      getSearchState: () => {
-        if (search.provides) {
-          return search.provides.getState();
-        }
-        return null;
-      },
-      setShowAllResults: (show: boolean) => {
-        if (search.provides) {
-          search.provides.setShowAllResults(show);
-        }
-      },
-    },
-    document: {
-      isReady: () => isReady,
-      isLoading: () => isLoading,
-      hasPassword: () => hasPassword,
-      getDocumentInfo: () => ({
-        currentPage: scroll.state?.currentPage || 1,
-        totalPages: scroll.state?.totalPages || 1,
-        zoomLevel: zoom.state?.zoomLevel || 1.0,
-        hasActiveSearch: Boolean(search.state),
-      }),
-    },
-    scroll: {
-      scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => {
-        if (scroll.provides) {
-          scroll.provides.scrollToPage(options);
-        }
-      },
-    },
-  }), [zoom, search, scroll, isReady, isLoading, hasPassword]);
+  // Debug annotation capability
+  useEffect(() => {
+    // Annotation capability debug removed
+  }, [annotationCapability]);
 
-  const renderPage = useCallback(({
-    pageIndex,
-    scale,
-    width,
-    height,
-    document,
-    rotation,
-  }: any) => (
-    <div
-      key={document?.id}
-      style={{
-        width,
-        height,
-        position: "relative",
-        backgroundColor: "white",
-        userSelect: "none",
-        WebkitUserSelect: "none",
-      }}
-      draggable={false}
-    >
-      <PagePointerProvider
-        pageIndex={pageIndex}
-        pageWidth={width}
-        pageHeight={height}
-        rotation={rotation || 0}
-        scale={scale}
+  useImperativeHandle(
+    ref,
+    () => ({
+      zoom: {
+        zoomIn: () => {
+          if (zoom.provides) {
+            zoom.provides.zoomIn();
+          }
+        },
+        zoomOut: () => {
+          if (zoom.provides) {
+            zoom.provides.zoomOut();
+          }
+        },
+        setZoom: (level: number) => {
+          if (zoom.provides) {
+            zoom.provides.requestZoom(level);
+          }
+        },
+        resetZoom: () => {
+          if (zoom.provides) {
+            zoom.provides.requestZoom(ZoomMode.FitPage);
+          }
+        },
+        fitToWidth: () => {
+          if (zoom.provides) {
+            zoom.provides.requestZoom(ZoomMode.FitWidth);
+          }
+        },
+        fitToPage: () => {
+          if (zoom.provides) {
+            zoom.provides.requestZoom(ZoomMode.FitPage);
+          }
+        },
+        getZoom: () => zoom.state?.zoomLevel || 1.0,
+      },
+      navigation: {
+        goToPage: (page: number) => {
+          if (scroll.provides) {
+            scroll.provides.scrollToPage({ pageNumber: page });
+          }
+        },
+        getCurrentPage: () => {
+          if (scroll.state) {
+            return scroll.state.currentPage || 1; // Use currentPage property
+          }
+          return 1;
+        },
+        getTotalPages: () => {
+          if (scroll.state) {
+            return scroll.state.totalPages || 1;
+          }
+          return 1;
+        },
+        nextPage: () => {
+          const currentPage = scroll.state?.currentPage || 1;
+          const totalPages = scroll.state?.totalPages || 1;
+          if (currentPage < totalPages && scroll.provides) {
+            scroll.provides.scrollToPage({ pageNumber: currentPage + 1 });
+          }
+        },
+        previousPage: () => {
+          const currentPage = scroll.state?.currentPage || 1;
+          if (currentPage > 1 && scroll.provides) {
+            scroll.provides.scrollToPage({ pageNumber: currentPage - 1 });
+          }
+        },
+        goToFirstPage: () => {
+          if (scroll.provides) {
+            scroll.provides.scrollToPage({ pageNumber: 1 });
+          }
+        },
+        goToLastPage: () => {
+          const totalPages = scroll.state?.totalPages || 1;
+          if (scroll.provides) {
+            scroll.provides.scrollToPage({ pageNumber: totalPages });
+          }
+        },
+      },
+      selection: {
+        clearSelection: () => {
+          // TODO: Implement when selection plugin hook is available
+          // clearSelection not yet implemented
+        },
+        getSelectedText: () => {
+          // TODO: Implement when selection plugin hook is available
+          // getSelectedText not yet implemented
+          return "";
+        },
+      },
+      search: {
+        searchText: async (keyword: string) => {
+          if (search.provides) {
+            const task = search.provides.searchAllPages(keyword);
+            return task.toPromise();
+          }
+          return null;
+        },
+        nextResult: () => {
+          if (search.provides) {
+            return search.provides.nextResult();
+          }
+          return -1;
+        },
+        previousResult: () => {
+          if (search.provides) {
+            return search.provides.previousResult();
+          }
+          return -1;
+        },
+        goToResult: (index: number) => {
+          if (search.provides) {
+            return search.provides.goToResult(index);
+          }
+          return -1;
+        },
+        stopSearch: () => {
+          if (search.provides) {
+            search.provides.stopSearch();
+          }
+        },
+        startSearch: () => {
+          if (search.provides) {
+            search.provides.startSearch();
+          }
+        },
+        getSearchState: () => {
+          if (search.provides) {
+            return search.provides.getState();
+          }
+          return null;
+        },
+        setShowAllResults: (show: boolean) => {
+          if (search.provides) {
+            search.provides.setShowAllResults(show);
+          }
+        },
+      },
+      document: {
+        isReady: () => isReady,
+        isLoading: () => isLoading,
+        hasPassword: () => hasPassword,
+        getDocumentInfo: () => ({
+          currentPage: scroll.state?.currentPage || 1,
+          totalPages: scroll.state?.totalPages || 1,
+          zoomLevel: zoom.state?.zoomLevel || 1.0,
+          hasActiveSearch: Boolean(search.state),
+        }),
+        download: async (
+          filename?: string,
+          includeAnnotations: boolean = true
+        ) => {
+          // Download functionality - TODO: implement
+        },
+      },
+      scroll: {
+        scrollToPage: (options: {
+          pageNumber: number;
+          pageCoordinates?: { x: number; y: number };
+          center?: boolean;
+        }) => {
+          if (scroll.provides) {
+            scroll.provides.scrollToPage(options);
+          }
+        },
+      },
+      annotations: {
+        setActiveTool: (toolId: string | null) => {
+          if (annotationCapability?.provides) {
+            annotationCapability.provides.setActiveTool(toolId);
+          }
+        },
+        getActiveTool: () => {
+          if (annotationCapability?.provides) {
+            return annotationCapability.provides.getActiveTool();
+          }
+          return null;
+        },
+        getProvider: () => {
+          return annotationCapability?.provides || null;
+        },
+        getSelectedAnnotation: () => {
+          if (annotationCapability?.provides) {
+            return annotationCapability.provides.getSelectedAnnotation();
+          }
+          return null;
+        },
+        deleteAnnotation: (pageIndex: number, id: string) => {
+          if (annotationCapability?.provides) {
+            annotationCapability.provides.deleteAnnotation(pageIndex, id);
+          }
+        },
+        deleteSelected: () => {
+          if (annotationCapability?.provides) {
+            const selection =
+              annotationCapability.provides.getSelectedAnnotation();
+            if (selection) {
+              annotationCapability.provides.deleteAnnotation(
+                selection.object.pageIndex,
+                selection.object.id
+              );
+            }
+          }
+        },
+      },
+    }),
+    [
+      zoom,
+      search,
+      scroll,
+      isReady,
+      isLoading,
+      hasPassword,
+      annotationCapability,
+      exportCapability,
+      exportPlugin,
+    ]
+  );
+
+  const renderPage = useCallback(
+    ({ pageIndex, scale, width, height, document, rotation }: any) => (
+      <div
+        key={document?.id}
+        style={{
+          width,
+          height,
+          position: "relative",
+          backgroundColor: "white",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        }}
+        draggable={false}
       >
-        <RenderLayer
+        <PagePointerProvider
           pageIndex={pageIndex}
+          pageWidth={width}
+          pageHeight={height}
+          rotation={rotation || 0}
           scale={scale}
-          style={{ pointerEvents: "none" }}
-        />
-        <SearchLayer
-          pageIndex={pageIndex}
-          scale={scale}
-          style={{ pointerEvents: "none" }}
-        />
-        <SelectionLayer pageIndex={pageIndex} scale={scale} />
-      </PagePointerProvider>
-    </div>
-  ), []);
+        >
+          <RenderLayer
+            pageIndex={pageIndex}
+            scale={scale}
+            style={{ pointerEvents: "none" }}
+          />
+          <SearchLayer
+            pageIndex={pageIndex}
+            scale={scale}
+            style={{ pointerEvents: "none" }}
+          />
+          <AnnotationLayer
+            pageIndex={pageIndex}
+            scale={scale}
+            pageWidth={width}
+            pageHeight={height}
+            rotation={rotation || 0}
+          />
+          <SelectionLayer pageIndex={pageIndex} scale={scale} />
+        </PagePointerProvider>
+      </div>
+    ),
+    []
+  );
 
   return (
     <Viewport
@@ -357,14 +469,19 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
         strategy: ScrollStrategy.Vertical,
       }),
       createPluginRegistration(InteractionManagerPluginPackage),
+      createPluginRegistration(SelectionPluginPackage),
+      createPluginRegistration(HistoryPluginPackage),
+      createPluginRegistration(AnnotationPluginPackage, {
+        annotationAuthor: "User", // Optional
+      }),
       createPluginRegistration(ZoomPluginPackage, {
         defaultZoomLevel: 1.0,
         minZoom: 0.2,
         maxZoom: 5.0,
       }),
       createPluginRegistration(RenderPluginPackage),
-      createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(SearchPluginPackage),
+      createPluginRegistration(ExportPluginPackage),
     ];
   }, [pdfBuffer, password, isReady, engine]);
 
@@ -413,7 +530,10 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
         ref={ref}
         isReady={isReady}
         isLoading={engineLoading}
-        hasPassword={Boolean(password) || isPasswordProtected(pdfBuffer || new ArrayBuffer(0))}
+        hasPassword={
+          Boolean(password) ||
+          isPasswordProtected(pdfBuffer || new ArrayBuffer(0))
+        }
       />
     </EmbedPDF>
   );
