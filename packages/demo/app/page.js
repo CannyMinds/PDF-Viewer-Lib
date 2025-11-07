@@ -1,10 +1,7 @@
 "use client";
 
 import { PDFViewer } from "../../pdf-viewer/lib";
-import {
-  Container,
-  Box,
-} from "@mui/material";
+import { Container, Box } from "@mui/material";
 import { useState, useEffect, useRef } from "react";
 import SearchComponent from "../components/SearchComponent";
 import AnnotationToolbar from "../components/AnnotationToolbar";
@@ -29,11 +26,13 @@ export default function Page() {
     const updateInfo = () => {
       if (pdfViewerRef.current?.document) {
         const info = pdfViewerRef.current.document.getDocumentInfo();
-        setDocumentInfo(prevInfo => {
+        setDocumentInfo((prevInfo) => {
           // Only update if values actually changed
-          if (!prevInfo ||
-              prevInfo.currentPage !== info.currentPage ||
-              prevInfo.totalPages !== info.totalPages) {
+          if (
+            !prevInfo ||
+            prevInfo.currentPage !== info.currentPage ||
+            prevInfo.totalPages !== info.totalPages
+          ) {
             return info;
           }
           return prevInfo;
@@ -98,7 +97,7 @@ export default function Page() {
         onFileChange={handleFileChange}
         onClear={handleClear}
       />
-      <Container maxWidth="lg" sx={{ mt: 2, mb: 2 }}>
+      {/* <Container maxWidth="lg" sx={{ mt: 2, mb: 2 }}>
         <Box
           sx={{
             display: "flex",
@@ -138,7 +137,7 @@ export default function Page() {
             </div>
           </Box>
         </Box>
-      </Container>
+      </Container>*/}
 
       <PasswordDialog
         open={showPasswordDialog}

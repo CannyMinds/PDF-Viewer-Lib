@@ -10,7 +10,8 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./workers/*": "./dist/workers/*"
   },
   "type": "module",
   "scripts": {
@@ -43,28 +44,28 @@
     "react-dom": ">=16.8.0"
   },
   "dependencies": {
-    "@embedpdf/core": "^1.3.1",
-    "@embedpdf/engines": "^1.3.1",
-    "@embedpdf/models": "^1.3.1",
-    "@embedpdf/pdfium": "^1.3.1",
-    "@embedpdf/plugin-annotation": "^1.3.1",
-    "@embedpdf/plugin-export": "^1.3.1",
-    "@embedpdf/plugin-history": "^1.3.1",
-    "@embedpdf/plugin-interaction-manager": "^1.3.1",
-    "@embedpdf/plugin-loader": "^1.3.1",
-    "@embedpdf/plugin-render": "^1.3.1",
-    "@embedpdf/plugin-scroll": "^1.3.1",
-    "@embedpdf/plugin-search": "^1.3.1",
-    "@embedpdf/plugin-selection": "^1.3.1",
-    "@embedpdf/plugin-viewport": "^1.3.1",
-    "@embedpdf/plugin-zoom": "^1.3.1"
+    "@embedpdf/core": "^1.4.1",
+    "@embedpdf/engines": "^1.4.1",
+    "@embedpdf/models": "^1.4.1",
+    "@embedpdf/pdfium": "^1.4.1",
+    "@embedpdf/plugin-annotation": "^1.4.1",
+    "@embedpdf/plugin-export": "^1.4.1",
+    "@embedpdf/plugin-history": "^1.4.1",
+    "@embedpdf/plugin-interaction-manager": "^1.4.1",
+    "@embedpdf/plugin-loader": "^1.4.1",
+    "@embedpdf/plugin-render": "^1.4.1",
+    "@embedpdf/plugin-scroll": "^1.4.1",
+    "@embedpdf/plugin-search": "^1.4.1",
+    "@embedpdf/plugin-selection": "^1.4.1",
+    "@embedpdf/plugin-viewport": "^1.4.1",
+    "@embedpdf/plugin-zoom": "^1.4.1"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/react": "^18.0.0",
-    "@types/react-dom": "^18.0.0",
+    "@types/node": "^24.9.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
     "tsup": "^8.5.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.9.3"
   },
   "publishConfig": {
     "access": "public"

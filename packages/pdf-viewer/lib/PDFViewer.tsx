@@ -117,7 +117,7 @@ export interface PDFViewerRef {
     };
     download: (
       filename?: string,
-      includeAnnotations?: boolean
+      includeAnnotations?: boolean,
     ) => Promise<void>;
   };
   scroll: {
@@ -304,7 +304,7 @@ const PDFContent = forwardRef<
         }),
         download: async (
           filename?: string,
-          includeAnnotations: boolean = true
+          includeAnnotations: boolean = true,
         ) => {
           // Download functionality - TODO: implement
         },
@@ -353,7 +353,7 @@ const PDFContent = forwardRef<
             if (selection) {
               annotationCapability.provides.deleteAnnotation(
                 selection.object.pageIndex,
-                selection.object.id
+                selection.object.id,
               );
             }
           }
@@ -370,7 +370,7 @@ const PDFContent = forwardRef<
       annotationCapability,
       exportCapability,
       exportPlugin,
-    ]
+    ],
   );
 
   const renderPage = useCallback(
@@ -415,7 +415,7 @@ const PDFContent = forwardRef<
         </PagePointerProvider>
       </div>
     ),
-    []
+    [],
   );
 
   return (
@@ -435,13 +435,13 @@ const PDFContent = forwardRef<
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
   { pdfBuffer, onPasswordRequest },
-  ref
+  ref,
 ): ReactElement | null {
   const {
     engine,
     isLoading: engineLoading,
     error: engineError,
-  } = usePdfiumEngine();
+  } = usePdfiumEngine({ wasmUrl: "/workers/pdfium.wasm", worker: true });
 
   const [password, setPassword] = useState("");
   const [isPasswordChecked, setIsPasswordChecked] = useState(false);

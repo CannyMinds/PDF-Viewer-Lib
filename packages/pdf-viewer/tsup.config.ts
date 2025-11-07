@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
-  entry: ['lib/index.ts'],
+  entry: ['lib/index.ts', 'lib/workers/pdf-worker.ts'],
   format: ['cjs', 'esm'],
   dts: true,
   splitting: false,
