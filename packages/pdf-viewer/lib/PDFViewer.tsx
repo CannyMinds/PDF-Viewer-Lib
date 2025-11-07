@@ -274,7 +274,6 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         }
       },
     },
-  }), [zoom, search, scroll, isReady, isLoading, hasPassword]);
     rotate: {
       rotateForward: () => {
         if (rotate.provides) {
@@ -298,7 +297,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         return Rotation.Degree0;
       },
     },
-  }), [zoom, search, rotate]);
+  }), [zoom, search, scroll, rotate, isReady, isLoading, hasPassword]);
 
   const renderPage = useCallback(({
     pageIndex,
