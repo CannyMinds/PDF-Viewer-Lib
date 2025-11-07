@@ -21,9 +21,11 @@ import {
 } from "@embedpdf/plugin-interaction-manager/react";
 import { useZoom, ZoomMode, ZoomPluginPackage } from "@embedpdf/plugin-zoom/react";
 import { useSearch } from "@embedpdf/plugin-search/react";
+import { useRotate, Rotate, RotatePluginPackage } from "@embedpdf/plugin-rotate/react";
+import { Rotation } from "@embedpdf/models";
 
 // Re-export for consuming apps
-export { ZoomMode };
+export { ZoomMode, Rotation };
 export type { SearchState } from "@embedpdf/plugin-search";
 export type { SearchResult, SearchAllPagesResult, MatchFlag } from "@embedpdf/models";
 
@@ -79,12 +81,19 @@ export interface PDFViewerRef {
     getSearchState: () => SearchState | null;
     setShowAllResults: (show: boolean) => void;
   };
+  rotate: {
+    rotateForward: () => void;
+    rotateBackward: () => void;
+    setRotation: (rotation: Rotation) => void;
+    getRotation: () => Rotation;
+  };
 }
 
 // Internal component that has access to plugin hooks
 const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
   const zoom = useZoom();
   const search = useSearch();
+  const rotate = useRotate();
   // TODO: Add other plugin hooks when available
   // const scroll = useScroll();
   // const selection = useSelection();
@@ -188,7 +197,30 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
         }
       },
     },
-  }), [zoom, search]);
+    rotate: {
+      rotateForward: () => {
+        if (rotate.provides) {
+          rotate.provides.rotateForward();
+        }
+      },
+      rotateBackward: () => {
+        if (rotate.provides) {
+          rotate.provides.rotateBackward();
+        }
+      },
+      setRotation: (rotation: Rotation) => {
+        if (rotate.provides) {
+          rotate.provides.setRotation(rotation);
+        }
+      },
+      getRotation: () => {
+        if (rotate.provides) {
+          return rotate.provides.getRotation();
+        }
+        return Rotation.Degree0;
+      },
+    },
+  }), [zoom, search, rotate]);
 
   const renderPage = useCallback(({
     pageIndex,
@@ -197,40 +229,49 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
     height,
     document,
     rotation,
-  }: any) => (
-    <div
-      key={document?.id}
-      style={{
-        width,
-        height,
-        position: "relative",
-        backgroundColor: "white",
-        userSelect: "none",
-        WebkitUserSelect: "none",
-      }}
-      draggable={false}
-    >
-      <PagePointerProvider
-        pageIndex={pageIndex}
-        pageWidth={width}
-        pageHeight={height}
-        rotation={rotation || 0}
-        scale={scale}
+  }: any) => {
+    // Swap width and height for 90° and 270° rotations
+    const isRotated90or270 = rotation === 1 || rotation === 3;
+    const containerWidth = isRotated90or270 ? height : width;
+    const containerHeight = isRotated90or270 ? width : height;
+
+    return (
+      <div
+        key={document?.id}
+        style={{
+          width: containerWidth,
+          height: containerHeight,
+          position: "relative",
+          backgroundColor: "white",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        }}
+        draggable={false}
       >
-        <RenderLayer
-          pageIndex={pageIndex}
-          scale={scale}
-          style={{ pointerEvents: "none" }}
-        />
-        <SearchLayer
-          pageIndex={pageIndex}
-          scale={scale}
-          style={{ pointerEvents: "none" }}
-        />
-        <SelectionLayer pageIndex={pageIndex} scale={scale} />
-      </PagePointerProvider>
-    </div>
-  ), []);
+        <Rotate pageSize={{ width, height }}>
+          <PagePointerProvider
+            pageIndex={pageIndex}
+            pageWidth={width}
+            pageHeight={height}
+            rotation={rotation || 0}
+            scale={scale}
+          >
+            <RenderLayer
+              pageIndex={pageIndex}
+              scale={scale}
+              style={{ pointerEvents: "none" }}
+            />
+            <SearchLayer
+              pageIndex={pageIndex}
+              scale={scale}
+              style={{ pointerEvents: "none" }}
+            />
+            <SelectionLayer pageIndex={pageIndex} scale={scale} />
+          </PagePointerProvider>
+        </Rotate>
+      </div>
+    );
+  }, []);
 
   return (
     <Viewport
@@ -289,6 +330,7 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
         maxZoom: 5.0,
       }),
       createPluginRegistration(RenderPluginPackage),
+      createPluginRegistration(RotatePluginPackage),
       createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(SearchPluginPackage),
     ];
