@@ -10,6 +10,7 @@
 
 - ✅ **Headless Design** - Full control over UI and styling
 - ✅ **Password Protected PDFs** - Built-in support for encrypted PDFs
+- ✅ **Annotations** - Add highlights, images/stamps, and manage annotations
 - ✅ **TypeScript Support** - Full type definitions included
 - ✅ **Modern React** - Uses hooks and modern React patterns
 - ✅ **Buffer-based** - Works with ArrayBuffer for flexible data loading
@@ -81,6 +82,57 @@ function App() {
         pdfBuffer={pdfBuffer} 
         onPasswordRequest={handlePasswordRequest}
       />
+    </div>
+  );
+}
+```
+
+### With Annotations
+
+The PDFViewer component includes built-in annotation support. Use the ref to access annotation methods:
+
+```jsx
+import { PDFViewer } from '@cannyminds/pdf-viewer';
+import { useRef } from 'react';
+
+function App() {
+  const [pdfBuffer, setPdfBuffer] = useState(null);
+  const pdfViewerRef = useRef(null);
+
+  const handleActivateHighlighter = () => {
+    pdfViewerRef.current?.annotation.activateHighlighter();
+  };
+
+  const handleActivateImageTool = () => {
+    pdfViewerRef.current?.annotation.activateStamp();
+  };
+
+  const handleDeleteSelected = () => {
+    const deleted = pdfViewerRef.current?.annotation.deleteSelectedAnnotation();
+    if (!deleted) {
+      alert('Please select an annotation to delete');
+    }
+  };
+
+  const handleGetDetails = () => {
+    const details = pdfViewerRef.current?.annotation.getSelectedAnnotationDetails();
+    if (details) {
+      console.log('Annotation ID:', details.id);
+      console.log('Type:', details.type);
+      console.log('Page:', details.pageIndex);
+      console.log('Position:', details.rect.origin); // { x, y }
+      console.log('Size:', details.rect.size); // { width, height }
+      console.log('Author:', details.author);
+    }
+  };
+
+  return (
+    <div style={{ height: '100vh' }}>
+      <button onClick={handleActivateHighlighter}>Highlight</button>
+      <button onClick={handleActivateImageTool}>Add Image</button>
+      <button onClick={handleDeleteSelected}>Delete</button>
+      <button onClick={handleGetDetails}>Get Details</button>
+      {pdfBuffer && <PDFViewer ref={pdfViewerRef} pdfBuffer={pdfBuffer} />}
     </div>
   );
 }
@@ -161,6 +213,155 @@ interface PDFViewerInstance {
   setIsPasswordChecked: (checked: boolean) => void;
 }
 ```
+
+### PDFViewerRef (Imperative Handle)
+
+When using `forwardRef`, you get access to these methods:
+
+```typescript
+interface PDFViewerRef {
+  zoom: {
+    zoomIn: () => void;
+    zoomOut: () => void;
+    setZoom: (level: number) => void;
+    resetZoom: () => void;
+    getZoom: () => number | ZoomMode;
+  };
+  search: {
+    searchText: (keyword: string) => Promise<SearchAllPagesResult | null>;
+    nextResult: () => number;
+    previousResult: () => number;
+    goToResult: (index: number) => number;
+    stopSearch: () => void;
+    startSearch: () => void;
+    getSearchState: () => SearchState | null;
+    setShowAllResults: (show: boolean) => void;
+  };
+  rotate: {
+    rotateForward: () => void;
+    rotateBackward: () => void;
+    setRotation: (rotation: Rotation) => void;
+    getRotation: () => Rotation;
+  };
+  annotation: {
+    activateHighlighter: () => void;
+    deactivateHighlighter: () => void;
+    isHighlighterActive: () => boolean;
+    activateStamp: () => void;
+    deactivateStamp: () => void;
+    isStampActive: () => boolean;
+    deleteSelectedAnnotation: () => boolean;
+    getSelectedAnnotation: () => any;
+    getSelectedAnnotationDetails: () => PdfAnnotationObject | null;
+    onAnnotationEvent: (callback: (event: AnnotationEvent) => void) => (() => void) | null;
+  };
+}
+```
+
+**Note:** Navigation (goToPage, getCurrentPage, getTotalPages) and text selection methods (clearSelection, getSelectedText) are not yet implemented.
+
+### Annotation API
+
+#### Annotation Methods
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `activateHighlighter()` | Activates the text highlighter tool | `void` |
+| `deactivateHighlighter()` | Deactivates the highlighter | `void` |
+| `isHighlighterActive()` | Checks if highlighter is active | `boolean` |
+| `activateStamp()` | Activates the image/stamp tool (opens file picker on click) | `void` |
+| `deactivateStamp()` | Deactivates the stamp tool | `void` |
+| `isStampActive()` | Checks if stamp tool is active | `boolean` |
+| `deleteSelectedAnnotation()` | Deletes the currently selected annotation | `boolean` |
+| `getSelectedAnnotation()` | Gets the selected annotation wrapper | `TrackedAnnotation \| null` |
+| `getSelectedAnnotationDetails()` | Gets the selected annotation full details | `PdfAnnotationObject \| null` |
+| `onAnnotationEvent(callback)` | Subscribes to annotation events | `unsubscribe function` |
+
+#### Annotation Data Structure
+
+```typescript
+interface PdfAnnotationObject {
+  id: string;                    // UUID v4 identifier
+  type: number;                  // Annotation type (8=Highlight, 13=Stamp, etc.)
+  pageIndex: number;             // Zero-based page number
+  rect: {                        // Position and dimensions
+    origin: { x: number; y: number };     // Top-left position
+    size: { width: number; height: number }; // Dimensions
+  };
+  author?: string;               // Creator name
+  created?: Date;                // Creation timestamp
+  modified?: Date;               // Last modification timestamp
+  contents?: string;             // Annotation content/comment
+  color?: string;                // Color (for highlights)
+  opacity?: number;              // Opacity 0.0-1.0
+  custom?: any;                  // Custom JSON data
+}
+```
+
+#### Getting Annotation Details
+
+```javascript
+const details = pdfViewerRef.current.annotation.getSelectedAnnotationDetails();
+
+if (details) {
+  // Basic info
+  console.log('ID:', details.id);
+  console.log('Type:', details.type);
+  console.log('Page:', details.pageIndex);
+
+  // Position and size
+  const x = details.rect.origin.x;
+  const y = details.rect.origin.y;
+  const width = details.rect.size.width;
+  const height = details.rect.size.height;
+
+  // Metadata
+  console.log('Author:', details.author);
+  console.log('Created:', details.created);
+}
+```
+
+#### Listening to Annotation Events
+
+```javascript
+useEffect(() => {
+  if (pdfViewerRef.current) {
+    const unsubscribe = pdfViewerRef.current.annotation.onAnnotationEvent((event) => {
+      console.log('Event type:', event.type); // 'create', 'update', 'delete', 'loaded'
+      console.log('Annotation:', event.annotation);
+      console.log('Page:', event.pageIndex);
+      console.log('Committed:', event.committed);
+
+      // Save to backend when annotation is created
+      if (event.type === 'create' && event.committed) {
+        saveAnnotationToBackend(event.annotation);
+      }
+    });
+
+    return () => unsubscribe && unsubscribe();
+  }
+}, []);
+```
+
+#### Annotation Types Reference
+
+| Type ID | Annotation Type | Description |
+|---------|----------------|-------------|
+| 8 | Highlight | Text highlighting |
+| 9 | Underline | Text underline |
+| 10 | Squiggly | Wavy underline |
+| 11 | StrikeOut | Text strikethrough |
+| 13 | Stamp | Image/stamp annotation |
+| 14 | Ink | Freehand drawing |
+| 15 | FreeText | Text box |
+| 4 | Square | Rectangle shape |
+| 5 | Circle | Ellipse shape |
+| 6 | Line | Straight line |
+
+#### Keyboard Shortcuts
+
+When an annotation is selected:
+- **Delete** or **Backspace** - Delete the selected annotation
 
 ### Error Types
 

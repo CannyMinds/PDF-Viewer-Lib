@@ -22,6 +22,11 @@ import {
 import { useZoom, ZoomMode, ZoomPluginPackage } from "@embedpdf/plugin-zoom/react";
 import { useSearch } from "@embedpdf/plugin-search/react";
 import { useRotate, Rotate, RotatePluginPackage } from "@embedpdf/plugin-rotate/react";
+import {
+  useAnnotationCapability,
+  AnnotationLayer,
+  AnnotationPluginPackage
+} from "@embedpdf/plugin-annotation/react";
 import { Rotation } from "@embedpdf/models";
 
 // Re-export for consuming apps
@@ -48,6 +53,7 @@ import { createPluginRegistration } from "@embedpdf/core";
 import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
+import { HistoryPluginPackage } from "@embedpdf/plugin-history";
 
 interface PDFViewerProps {
   pdfBuffer?: ArrayBuffer | null | undefined;
@@ -87,6 +93,18 @@ export interface PDFViewerRef {
     setRotation: (rotation: Rotation) => void;
     getRotation: () => Rotation;
   };
+  annotation: {
+    activateHighlighter: () => void;
+    deactivateHighlighter: () => void;
+    isHighlighterActive: () => boolean;
+    activateStamp: () => void;
+    deactivateStamp: () => void;
+    isStampActive: () => boolean;
+    deleteSelectedAnnotation: () => boolean;
+    getSelectedAnnotation: () => any;
+    getSelectedAnnotationDetails: () => any;
+    onAnnotationEvent: (callback: (event: any) => void) => (() => void) | null;
+  };
 }
 
 // Internal component that has access to plugin hooks
@@ -94,6 +112,7 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
   const zoom = useZoom();
   const search = useSearch();
   const rotate = useRotate();
+  const annotation = useAnnotationCapability();
   // TODO: Add other plugin hooks when available
   // const scroll = useScroll();
   // const selection = useSelection();
@@ -220,7 +239,78 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
         return Rotation.Degree0;
       },
     },
-  }), [zoom, search, rotate]);
+    annotation: {
+      activateHighlighter: () => {
+        if (annotation.provides) {
+          annotation.provides.setActiveTool('highlight');
+        }
+      },
+      deactivateHighlighter: () => {
+        if (annotation.provides) {
+          annotation.provides.setActiveTool(null);
+        }
+      },
+      isHighlighterActive: () => {
+        if (annotation.provides) {
+          const activeTool = annotation.provides.getActiveTool();
+          return activeTool?.id === 'highlight';
+        }
+        return false;
+      },
+      activateStamp: () => {
+        if (annotation.provides) {
+          annotation.provides.setActiveTool('stamp');
+        }
+      },
+      deactivateStamp: () => {
+        if (annotation.provides) {
+          annotation.provides.setActiveTool(null);
+        }
+      },
+      isStampActive: () => {
+        if (annotation.provides) {
+          const activeTool = annotation.provides.getActiveTool();
+          return activeTool?.id === 'stamp';
+        }
+        return false;
+      },
+      deleteSelectedAnnotation: () => {
+        if (annotation.provides) {
+          const selection = annotation.provides.getSelectedAnnotation();
+          if (selection) {
+            annotation.provides.deleteAnnotation(
+              selection.object.pageIndex,
+              selection.object.id
+            );
+            return true;
+          }
+        }
+        return false;
+      },
+      getSelectedAnnotation: () => {
+        if (annotation.provides) {
+          return annotation.provides.getSelectedAnnotation();
+        }
+        return null;
+      },
+      getSelectedAnnotationDetails: () => {
+        if (annotation.provides) {
+          const selected = annotation.provides.getSelectedAnnotation();
+          if (selected && selected.object) {
+            // Return the full annotation object with all properties
+            return selected.object;
+          }
+        }
+        return null;
+      },
+      onAnnotationEvent: (callback: (event: any) => void) => {
+        if (annotation.provides) {
+          return annotation.provides.onAnnotationEvent(callback);
+        }
+        return null;
+      },
+    },
+  }), [zoom, search, rotate, annotation]);
 
   const renderPage = useCallback(({
     pageIndex,
@@ -267,6 +357,13 @@ const PDFContent = forwardRef<PDFViewerRef>((_, ref) => {
               style={{ pointerEvents: "none" }}
             />
             <SelectionLayer pageIndex={pageIndex} scale={scale} />
+            <AnnotationLayer
+              pageIndex={pageIndex}
+              scale={scale}
+              pageWidth={width}
+              pageHeight={height}
+              rotation={rotation || 0}
+            />
           </PagePointerProvider>
         </Rotate>
       </div>
@@ -333,6 +430,8 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
       createPluginRegistration(RotatePluginPackage),
       createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(SearchPluginPackage),
+      createPluginRegistration(HistoryPluginPackage),
+      createPluginRegistration(AnnotationPluginPackage),
     ];
   }, [pdfBuffer, password, isReady, engine]);
 
