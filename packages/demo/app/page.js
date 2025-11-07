@@ -266,6 +266,34 @@ export default function Page() {
               </Box>
             </Box>
           )}
+          {/* Rotate Controls */}
+          {pdfBuffer && (
+            <Box
+              sx={{ display: "flex", gap: 1, mb: 1, justifyContent: "center" }}
+            >
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => pdfViewerRef.current?.rotate.rotateBackward()}
+              >
+                Rotate Left
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => pdfViewerRef.current?.rotate.setRotation(0)}
+              >
+                Reset
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => pdfViewerRef.current?.rotate.rotateForward()}
+              >
+                Rotate Right
+              </Button>
+            </Box>
+          )}
           <Box
             sx={{
               width: "100%",
