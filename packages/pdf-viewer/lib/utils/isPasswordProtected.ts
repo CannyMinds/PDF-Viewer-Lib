@@ -1,5 +1,5 @@
-export default function isPasswordProtected(pdfBuffer: ArrayBuffer): boolean {
-    const uint8Array = new Uint8Array(pdfBuffer);
+export default function isPasswordProtected(pdfBuffer: ArrayBuffer | Uint8Array): boolean {
+    const uint8Array = pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
     const searchPattern = '/Encrypt';
     const searchBytes = new TextEncoder().encode(searchPattern);
 
