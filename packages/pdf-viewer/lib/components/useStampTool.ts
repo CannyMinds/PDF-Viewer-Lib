@@ -2,9 +2,11 @@ import { useCallback, useRef, type MutableRefObject } from 'react';
 import { PdfAnnotationSubtype } from "@embedpdf/models";
 import { loadImageDimensions } from './utils';
 import { svgToPngDataUrl } from './svgUtils';
+import type { AnnotationPlugin } from '../types/embedpdf';
+import type { UserInfo } from './useAnnotationAPI';
 
 interface UseStampToolParams {
-  annotation: any;
+  annotation: AnnotationPlugin;
   customStampToolIdRef: MutableRefObject<string | null>;
   stampSizeCacheRef: MutableRefObject<Map<string, { width: number; height: number }>>;
 }
@@ -12,13 +14,12 @@ interface UseStampToolParams {
 export function useStampTool(params: UseStampToolParams) {
   const { annotation, customStampToolIdRef, stampSizeCacheRef } = params;
 
-  const ensureStampTool = useCallback(async (imageDataUrl: string, userInfo?: { author?: string; customData?: any }, isSvg: boolean = false) => {
+  const ensureStampTool = useCallback(async (imageDataUrl: string, userInfo?: UserInfo, isSvg: boolean = false) => {
     if (!annotation.provides) {
       return null;
     }
 
     try {
-      console.debug("[PDFViewer] ensureStampTool", { imageDataUrl: imageDataUrl.slice(0, 32), userInfo });
       const cached = stampSizeCacheRef.current.get(imageDataUrl);
       let finalImageDataUrl = imageDataUrl;
       
@@ -53,8 +54,7 @@ export function useStampTool(params: UseStampToolParams) {
       const existingTool = annotation.provides.getTool(toolId);
 
       if (!existingTool) {
-        console.debug("[PDFViewer] adding new custom stamp tool", { toolId, width: toolWidth, height: toolHeight, userInfo });
-        const defaults: any = {
+        const defaults: Record<string, unknown> = {
           type: PdfAnnotationSubtype.STAMP,
           imageSrc: finalImageDataUrl,
           imageSize: { width: toolWidth, height: toolHeight },
@@ -77,7 +77,6 @@ export function useStampTool(params: UseStampToolParams) {
         });
         customStampToolIdRef.current = toolId;
       } else {
-        console.debug("[PDFViewer] updating existing stamp defaults", { toolId, width: toolWidth, height: toolHeight });
         annotation.provides.setToolDefaults(toolId, {
           imageSrc: finalImageDataUrl,
           imageSize: { width: toolWidth, height: toolHeight },
@@ -87,14 +86,13 @@ export function useStampTool(params: UseStampToolParams) {
 
       return toolId;
     } catch (error) {
-      console.error("[PDFViewer] Failed to ensure stamp tool", error);
+      console.error("Failed to ensure stamp tool", error);
       return null;
     }
   }, [annotation.provides, customStampToolIdRef, stampSizeCacheRef]);
 
   const waitForActiveTool = useCallback(async (toolId: string): Promise<boolean> => {
     if (!annotation.provides) {
-      console.warn("Cannot wait for tool: annotation API unavailable");
       return false;
     }
 
@@ -109,7 +107,6 @@ export function useStampTool(params: UseStampToolParams) {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     }
 
-    console.warn(`[PDFViewer] Tool ${toolId} did not activate within ${timeout}ms`);
     return false;
   }, [annotation.provides]);
 

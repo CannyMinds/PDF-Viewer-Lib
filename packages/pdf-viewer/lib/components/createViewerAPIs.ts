@@ -1,19 +1,20 @@
 import { ZoomMode } from "@embedpdf/plugin-zoom/react";
 import { Rotation } from "@embedpdf/models";
+import type { ZoomPlugin, ScrollPlugin, SearchPlugin, RotatePlugin } from '../types/embedpdf';
 
 interface CreateAPIsParams {
-  zoom: any;
-  scroll: any;
-  search: any;
-  rotate: any;
-  engine: any;
+  zoom: ZoomPlugin;
+  scroll: ScrollPlugin;
+  search: SearchPlugin;
+  rotate: RotatePlugin;
+  engine: unknown;
   pdfBuffer?: ArrayBuffer | null;
   isReady: boolean;
   isLoading: boolean;
   hasPassword: boolean;
 }
 
-export function createZoomAPI(zoom: any) {
+export function createZoomAPI(zoom: ZoomPlugin) {
   return {
     zoomIn: () => {
       if (zoom.provides) {
@@ -54,7 +55,7 @@ export function createZoomAPI(zoom: any) {
   };
 }
 
-export function createNavigationAPI(scroll: any) {
+export function createNavigationAPI(scroll: ScrollPlugin) {
   return {
     goToPage: (page: number) => {
       if (scroll.provides) {
@@ -94,16 +95,16 @@ export function createNavigationAPI(scroll: any) {
   };
 }
 
-export function createSearchAPI(search: any, scroll: any) {
+export function createSearchAPI(search: SearchPlugin, scroll: ScrollPlugin) {
   return {
-    searchText: async (text: string, options?: any) => {
+    searchText: async (text: string, options?: Record<string, unknown>) => {
       if (!search.provides) {
         console.warn('Search API not available');
         return null;
       }
       return await search.provides.search(text, options);
     },
-    searchAll: async (text: string, options?: any) => {
+    searchAll: async (text: string, options?: Record<string, unknown>) => {
       if (!search.provides) {
         console.warn('Search API not available');
         return null;
@@ -123,7 +124,7 @@ export function createSearchAPI(search: any, scroll: any) {
         search.provides.highlightResults(results);
       }
     },
-    scrollToSearchResult: (result: any) => {
+    scrollToSearchResult: (result: Record<string, unknown>) => {
       if (result && result.pageIndex !== undefined && scroll.provides) {
         scroll.provides.scrollToPage({
           pageNumber: result.pageIndex + 1,
@@ -135,7 +136,7 @@ export function createSearchAPI(search: any, scroll: any) {
   };
 }
 
-export function createRotateAPI(rotate: any) {
+export function createRotateAPI(rotate: RotatePlugin) {
   return {
     rotateClockwise: () => {
       if (rotate.provides) {
@@ -230,7 +231,7 @@ export function createStatusAPI(params: CreateAPIsParams) {
   };
 }
 
-export function createScrollAPI(scroll: any) {
+export function createScrollAPI(scroll: ScrollPlugin) {
   return {
     scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => {
       if (scroll.provides) {

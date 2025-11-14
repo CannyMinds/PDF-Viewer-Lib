@@ -7,10 +7,10 @@ export enum PDFErrorType {
 export interface PDFError {
     type: PDFErrorType;
     message: string;
-    originalError?: any;
+    originalError?: unknown;
 }
 
-export function createPDFError(type: PDFErrorType, message: string, originalError?: any): PDFError {
+export function createPDFError(type: PDFErrorType, message: string, originalError?: unknown): PDFError {
     return {
         type,
         message,

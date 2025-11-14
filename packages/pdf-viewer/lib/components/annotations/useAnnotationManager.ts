@@ -2,10 +2,11 @@ import { useMemo } from 'react';
 import { useAnnotationSelection } from './useAnnotationSelection';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { AnnotationSelectionMenu } from './AnnotationSelectionMenu';
+import type { AnnotationAPI, AnnotationSelectionMenuProps } from '../../types/annotation';
 
 export interface UseAnnotationManagerProps {
   pdfBuffer: Uint8Array | null;
-  annotationAPI: any;
+  annotationAPI: AnnotationAPI;
   userDetails?: {
     name?: string;
     email?: string;
@@ -35,7 +36,7 @@ export const useAnnotationManager = ({
   });
 
   const annotationSelectionMenu = useMemo(() => {
-    return (props: any) => {
+    return (props: AnnotationSelectionMenuProps) => {
       return AnnotationSelectionMenu({
         ...props,
         onDelete: deleteSelectedAnnotation,
