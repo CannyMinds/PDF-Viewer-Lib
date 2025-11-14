@@ -1,14 +1,20 @@
 import { useCallback, useRef, type MutableRefObject } from 'react';
 import { PdfAnnotationSubtype } from "@embedpdf/models";
 import { loadImageDimensions } from './utils';
+import type { AnnotationPlugin, AnnotationEvent, AnnotationObject } from '../types/embedpdf';
+
+export interface UserInfo {
+  author?: string;
+  customData?: unknown;
+}
 
 interface AnnotationAPIParams {
-  annotation: any;
-  currentUserInfoRef: MutableRefObject<{ author?: string; customData?: any } | null>;
+  annotation: AnnotationPlugin;
+  currentUserInfoRef: MutableRefObject<UserInfo | null>;
   customStampToolIdRef: MutableRefObject<string | null>;
   stampSizeCacheRef: MutableRefObject<Map<string, { width: number; height: number }>>;
   setAnnotationRenderVersion: (fn: (v: number) => number) => void;
-  ensureStampTool: (imageDataUrl: string, userInfo?: { author?: string; customData?: any }) => Promise<string | null>;
+  ensureStampTool: (imageDataUrl: string, userInfo?: UserInfo) => Promise<string | null>;
   waitForActiveTool: (toolId: string) => Promise<boolean>;
   waitForNextFrame: () => Promise<void>;
 }
@@ -39,7 +45,6 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
     },
     activateStamp: async (imageDataUrl?: string) => {
       if (!annotation.provides) {
-        console.warn("Cannot activate stamp: annotation API unavailable");
         return;
       }
 
@@ -49,16 +54,13 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
       }
 
       try {
-        console.debug('[PDFViewer] activateStamp invoked');
         const toolId = await ensureStampTool(imageDataUrl, currentUserInfoRef.current || undefined);
         if (!toolId || !annotation.provides) return;
 
         annotation.provides.setActiveTool(null);
         await waitForNextFrame();
         annotation.provides.setActiveTool(toolId);
-        console.debug('[PDFViewer] custom stamp tool active request sent', { toolId });
         const activated = await waitForActiveTool(toolId);
-        console.debug('[PDFViewer] custom stamp tool activation result', { toolId, activated });
         if (activated) {
           setAnnotationRenderVersion((version) => version + 1);
         }
@@ -82,20 +84,18 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
       const customId = customStampToolIdRef.current;
       return activeTool?.id === 'stamp' || (customId !== null && activeTool?.id === customId);
     },
-    addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: { author?: string; customData?: any }) => {
+    addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: UserInfo) => {
       if (!annotation.provides) {
-        console.warn('Annotation API not available');
         return false;
       }
 
       try {
-        const api = annotation.provides as any;
+        const api = annotation.provides;
         if (!api.createAnnotation) {
-          console.warn('createAnnotation is not available on the annotation API');
           return false;
         }
 
-        const annotationData: any = {
+        const annotationData: Record<string, unknown> = {
           type: PdfAnnotationSubtype.STAMP,
           rect: [x, y, x + width, y + height],
           imageSrc: imageDataUrl,
@@ -125,7 +125,6 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
     activateSignature: () => {
       if (!annotation.provides) return;
       annotation.provides.setActiveTool('ink');
-      console.log('Signature mode activated (using ink tool for drawing)');
     },
     deactivateSignature: () => {
       if (!annotation.provides) return;
@@ -136,7 +135,6 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
       return annotation.provides.getActiveTool()?.id === 'ink';
     },
     addSignatureAnnotation: () => {
-      console.warn('addSignatureAnnotation is not fully supported by embedpdf plugin API. Use activateSignature() instead to let users place signatures manually.');
       return false;
     },
     deleteSelectedAnnotation: () => {
@@ -157,41 +155,35 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
       if (!selected || !selected.object) return null;
       return selected.object;
     },
-    getAllAnnotations: () => {
+    getAllAnnotations: (): AnnotationObject[] => {
       if (!annotation.provides) {
-        console.warn('[PDFViewer] Annotation API not available');
         return [];
       }
 
-      const api = annotation.provides as any;
+      const api = annotation.provides;
 
-      if (typeof api.getAllAnnotations === 'function') {
-        console.log('[PDFViewer] Using annotation.provides.getAllAnnotations()');
+      if (api.getAllAnnotations) {
         return api.getAllAnnotations();
       }
 
-      if (typeof api.getAnnotations === 'function') {
-        console.log('[PDFViewer] Using annotation.provides.getAnnotations()');
+      if (api.getAnnotations) {
         return api.getAnnotations();
       }
 
-      console.warn('[PDFViewer] No direct method to get all annotations. Use onAnnotationEvent to capture annotations as they are created/updated.');
       return [];
     },
 
-    onAnnotationEvent: (callback: (event: any) => void) => {
+    onAnnotationEvent: (callback: (event: AnnotationEvent) => void) => {
       if (!annotation.provides) {
-        console.warn('[PDFViewer] Annotation API not available');
         return null;
       }
 
-      const api = annotation.provides as any;
+      const api = annotation.provides;
 
-      if (typeof api.onAnnotationEvent === 'function') {
+      if (api.onAnnotationEvent) {
         return api.onAnnotationEvent(callback);
       }
 
-      console.warn('[PDFViewer] onAnnotationEvent not available');
       return null;
     },
 

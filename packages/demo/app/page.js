@@ -16,10 +16,12 @@ import {
   TextField,
   Paper,
 } from "@mui/material";
-import { PictureAsPdf, Clear, Highlight, Image, Draw, Delete } from "@mui/icons-material";
+import { PictureAsPdf, Clear, Highlight, Draw, Delete } from "@mui/icons-material";
+import ApprovalIcon from '@mui/icons-material/Approval';
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import SearchComponent from "../components/SearchComponent";
 import SignatureDialog from "../components/SignatureDialog";
+import StampDialog from "../components/StampDialog";
 
 export default function Page() {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -29,9 +31,11 @@ export default function Page() {
   const [passwordResolver, setPasswordResolver] = useState(null);
   const [isHighlighterActive, setIsHighlighterActive] = useState(false);
   const [isStampActive, setIsStampActive] = useState(false);
+  const [isSignatureActive, setIsSignatureActive] = useState(false);
   const [hasSelectedAnnotation, setHasSelectedAnnotation] = useState(false);
   const [annotationDetails, setAnnotationDetails] = useState(null);
   const [showSignatureDialog, setShowSignatureDialog] = useState(false);
+  const [showStampDialog, setShowStampDialog] = useState(false);
   const [allAnnotations, setAllAnnotations] = useState([]);
   const [filterType, setFilterType] = useState('all'); // 'all', 'signature', 'highlight', 'text'
   const [currentPage, setCurrentPage] = useState(1);
@@ -40,6 +44,11 @@ export default function Page() {
   const [currentUser, setCurrentUser] = useState({ author: "Demo User", email: "demo@example.com", id: "user123" });
   const pdfViewerRef = useRef(null);
   const lastSelectedIdRef = useRef(null);
+
+  // Debug: Log signature active state changes
+  useEffect(() => {
+    console.log('🔄 isSignatureActive changed to:', isSignatureActive);
+  }, [isSignatureActive]);
 
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
@@ -87,11 +96,18 @@ export default function Page() {
 
   const handleSignatureSave = async (signatureDataUrl) => {
     setShowSignatureDialog(false);
-    console.log('Signature saved, activating stamp tool...');
+    console.log('🖊️ Signature saved, activating stamp tool...');
+    if (isHighlighterActive) {
+      pdfViewerRef.current.annotation.deactivateHighlighter();
+      setIsHighlighterActive(false);
+    }
+    if (isStampActive) {
+      setIsStampActive(false);
+    }
     await pdfViewerRef.current?.annotation.activateStamp(signatureDataUrl);
-    setIsStampActive(true);
-    setIsHighlighterActive(false);
-    console.log('Stamp tool activated - click on PDF to place signature');
+    setIsSignatureActive(true);
+    console.log('🖊️ Signature active state set to:', true);
+    console.log('🖊️ Stamp tool activated - click on PDF to place signature');
   };
 
   const toggleHighlighter = () => {
@@ -103,6 +119,10 @@ export default function Page() {
         if (isStampActive) {
           pdfViewerRef.current.annotation.deactivateStamp();
           setIsStampActive(false);
+        }
+        if (isSignatureActive) {
+          pdfViewerRef.current.annotation.deactivateStamp();
+          setIsSignatureActive(false);
         }
         pdfViewerRef.current.annotation.activateHighlighter();
         setIsHighlighterActive(true);
@@ -116,14 +136,26 @@ export default function Page() {
         pdfViewerRef.current.annotation.deactivateStamp();
         setIsStampActive(false);
       } else {
-        if (isHighlighterActive) {
-          pdfViewerRef.current.annotation.deactivateHighlighter();
-          setIsHighlighterActive(false);
+        if (isSignatureActive) {
+          pdfViewerRef.current.annotation.deactivateStamp();
+          setIsSignatureActive(false);
         }
-        pdfViewerRef.current.annotation.activateStamp();
-        setIsStampActive(true);
+        setShowStampDialog(true);
       }
     }
+  };
+
+  const handleStampSave = async (imageDataUrl, isSvg = false) => {
+    setShowStampDialog(false);
+    if (isHighlighterActive) {
+      pdfViewerRef.current.annotation.deactivateHighlighter();
+      setIsHighlighterActive(false);
+    }
+    if (isSignatureActive) {
+      setIsSignatureActive(false);
+    }
+    await pdfViewerRef.current?.annotation.activateStamp(imageDataUrl);
+    setIsStampActive(true);
   };
 
   const handleDeleteAnnotation = useCallback(() => {
@@ -216,6 +248,11 @@ export default function Page() {
             console.log('✅ Added annotation. Total:', annotationsFromEvents.current.length);
             setAllAnnotations([...annotationsFromEvents.current]);
           }
+          // When stamp/signature is placed, deactivate the active state
+          if (event.annotation.type === 13) {
+            setIsStampActive(false);
+            setIsSignatureActive(false);
+          }
         } else if (event.type === 'delete') {
           annotationsFromEvents.current = annotationsFromEvents.current.filter(a => a.id !== event.annotation.id);
           console.log('🗑️ Removed annotation. Total:', annotationsFromEvents.current.length);
@@ -254,29 +291,23 @@ export default function Page() {
   }, [hasSelectedAnnotation, handleDeleteAnnotation]);
 
   const annotationSelectionMenu = useMemo(() => {
-    return ({ menuWrapperProps = {}, selected, rect }) => {
-      // Only render menu if annotation is actually selected and the annotation API is ready
+    return ({ menuWrapperProps = {}, selected, rect, annotation }) => {
       if (!selected || !pdfViewerRef.current?.annotation) {
         return null;
       }
 
       const { style: wrapperStyle = {}, ref: menuRef, className, ...restProps } = menuWrapperProps;
       
-      // Safely extract position values
-      const originalTop = wrapperStyle?.top;
-      const originalLeft = wrapperStyle?.left;
-      const originalTransform = wrapperStyle?.transform;
-      
-      // Get annotation dimensions from selected annotation or rect
+      // Get annotation rect to calculate button position
       const selectedAnnotation = pdfViewerRef.current.annotation.getSelectedAnnotation();
       const annotationRect = selectedAnnotation?.object?.rect || rect;
-      const annotationHeight = annotationRect?.size?.height || annotationRect?.height || 30;
-      const annotationWidth = annotationRect?.size?.width || annotationRect?.width || 100;
-      const annotationX = annotationRect?.origin?.x || 0;
+      const annotationWidth = annotationRect?.size?.width || annotationRect?.width || 0;
+      const annotationHeight = annotationRect?.size?.height || annotationRect?.height || 0;
       
-      const menuTop = typeof originalTop === 'number' ? originalTop + annotationHeight + 5 : originalTop;
-      const menuLeft = typeof originalLeft === 'number' ? originalLeft + (annotationWidth / 2) : originalLeft;
-
+      // Calculate position: center horizontally, below annotation
+      const leftOffset = annotationWidth / 2;
+      const topOffset = annotationHeight + 8;
+      
       return (
         <div
           ref={menuRef}
@@ -284,21 +315,21 @@ export default function Page() {
           {...restProps}
           style={{
             ...wrapperStyle,
-            top: menuTop,
-            left: menuLeft,
-            transform: 'translate(-50%, 0)',
+            transform: `translate(calc(-50% + ${leftOffset}px), ${topOffset}px)`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: '#ffffff',
-            borderRadius: '6px',
-            boxShadow: '0 1px 4px rgba(0, 0, 0, 0.15)',
-            padding: '0px',
+            borderRadius: '8px',
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.12)',
+            padding: '5px 8px',
             pointerEvents: 'auto',
             zIndex: 99,
-            border: '1px solid rgba(0, 0, 0, 0.06)',
-            width: '28px',
-            height: '28px',
+            border: '1px solid rgba(0, 0, 0, 0.08)',
+            width: 'auto',
+            height: 'auto',
+            gap: '4px',
+            backgroundClip: 'padding-box',
           }}
         >
           <IconButton
@@ -311,11 +342,11 @@ export default function Page() {
             title="Delete annotation (Del)"
             sx={{
               color: '#d32f2f',
-              padding: '0px',
-              width: '28px',
-              height: '28px',
-              minWidth: '28px',
-              minHeight: '28px',
+              padding: '2px',
+              width: 'auto',
+              height: 'auto',
+              minWidth: 'auto',
+              minHeight: 'auto',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -325,7 +356,7 @@ export default function Page() {
                 color: '#c62828',
               },
               '&:active': {
-                transform: 'scale(0.9)',
+                transform: 'scale(0.94)',
               },
             }}
           >
@@ -529,17 +560,17 @@ export default function Page() {
                 variant={isStampActive ? "contained" : "outlined"}
                 size="small"
                 onClick={toggleStamp}
-                startIcon={<Image />}
+                startIcon={<ApprovalIcon />}
               >
-                {isStampActive ? "Image Tool Active" : "Add Image"}
+                {isStampActive ? "Stamp Active" : "Add Stamp"}
               </Button>
               <Button
-                variant="outlined"
+                variant={isSignatureActive ? "contained" : "outlined"}
                 size="small"
                 startIcon={<Draw />}
                 onClick={() => setShowSignatureDialog(true)}
               >
-                Add Signature
+                {isSignatureActive ? "Signature Active" : "Add Signature"}
               </Button>
             </Box>
           )}
@@ -806,6 +837,13 @@ export default function Page() {
         open={showSignatureDialog}
         onClose={() => setShowSignatureDialog(false)}
         onSave={handleSignatureSave}
+        username={currentUser.author}
+      />
+
+      <StampDialog
+        open={showStampDialog}
+        onClose={() => setShowStampDialog(false)}
+        onSave={handleStampSave}
         username={currentUser.author}
       />
     </>
