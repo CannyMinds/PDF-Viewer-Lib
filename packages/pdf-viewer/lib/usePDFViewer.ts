@@ -8,6 +8,8 @@ import { RenderPluginPackage } from "@embedpdf/plugin-render";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-manager";
 import { ZoomPluginPackage } from "@embedpdf/plugin-zoom";
+import { HistoryPluginPackage } from "@embedpdf/plugin-history";
+import { AnnotationPluginPackage } from "@embedpdf/plugin-annotation";
 import isPasswordProtected from "./utils/isPasswordProtected";
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
 import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
@@ -58,8 +60,6 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
 
     // Handle engine errors
     useEffect(() => {
-        console.log('[PDF Engine Error]: ', engineError);
-
         if (engineError) {
             setError(createPDFError(
                 PDFErrorType.ENGINE,
@@ -120,6 +120,10 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             }),
             createPluginRegistration(RenderPluginPackage),
             createPluginRegistration(SelectionPluginPackage),
+            createPluginRegistration(HistoryPluginPackage),
+            createPluginRegistration(AnnotationPluginPackage, {
+                annotationAuthor: "User",
+            }),
         ];
     }, [pdfBuffer, password, isReady]);
 
