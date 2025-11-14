@@ -1,16 +1,18 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
+import type { AnnotationAPI } from '../../types/annotation';
+import type { AnnotationObject } from '../../types/embedpdf';
 
 export interface UseAnnotationSelectionProps {
   pdfBuffer: Uint8Array | null;
-  annotationAPI: any;
+  annotationAPI: AnnotationAPI;
 }
 
-export const useAnnotationSelection = ({ 
-  pdfBuffer, 
-  annotationAPI 
+export const useAnnotationSelection = ({
+  pdfBuffer,
+  annotationAPI
 }: UseAnnotationSelectionProps) => {
   const [hasSelectedAnnotation, setHasSelectedAnnotation] = useState(false);
-  const [annotationDetails, setAnnotationDetails] = useState<any>(null);
+  const [annotationDetails, setAnnotationDetails] = useState<AnnotationObject | null>(null);
   const lastSelectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
