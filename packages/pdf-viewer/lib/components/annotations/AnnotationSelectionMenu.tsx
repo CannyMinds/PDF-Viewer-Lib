@@ -1,11 +1,12 @@
 import React from 'react';
+import type { AnnotationObject } from '../../types/embedpdf';
 
 export interface AnnotationSelectionMenuProps {
   menuWrapperProps?: {
     style?: React.CSSProperties;
     ref?: React.RefObject<HTMLDivElement>;
     className?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
   selected: boolean;
   rect?: {
@@ -15,7 +16,7 @@ export interface AnnotationSelectionMenuProps {
     origin?: { x: number; y: number };
   };
   onDelete: () => void;
-  getSelectedAnnotation: () => any;
+  getSelectedAnnotation: () => AnnotationObject | null;
 }
 
 export const AnnotationSelectionMenu: React.FC<AnnotationSelectionMenuProps> = ({

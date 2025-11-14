@@ -60,8 +60,6 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
 
     // Handle engine errors
     useEffect(() => {
-        console.log('[PDF Engine Error]: ', engineError);
-
         if (engineError) {
             setError(createPDFError(
                 PDFErrorType.ENGINE,
