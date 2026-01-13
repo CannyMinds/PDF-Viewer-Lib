@@ -3,9 +3,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
-import { Provider } from 'react-redux';
-import { PersistGate } from 'redux-persist/integration/react';
-import { store, persistor } from '../store';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,15 +23,11 @@ const theme = createTheme({
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
-        <Provider store={store}>
-          <PersistGate loading={null} persistor={persistor}>
-            <ThemeProvider theme={theme}>
-              <CssBaseline />
-              {children}
-            </ThemeProvider>
-          </PersistGate>
-        </Provider>
+      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+        <ThemeProvider theme={theme}>
+          <CssBaseline />
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );
