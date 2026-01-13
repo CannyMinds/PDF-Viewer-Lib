@@ -187,5 +187,170 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
       return null;
     },
 
+    updateAnnotation: (pageIndex: number, annotationId: string, updates: Record<string, unknown>) => {
+      if (!annotation.provides) {
+        return false;
+      }
+
+      try {
+        const api = annotation.provides as any;
+        
+        if (api.updateAnnotation) {
+          api.updateAnnotation(pageIndex, annotationId, updates);
+          
+          if (api.commit) {
+            api.commit();
+          }
+          
+          return true;
+        }
+
+        return false;
+      } catch (error) {
+        console.error('Failed to update annotation', error);
+        return false;
+      }
+    },
+
+    selectAnnotation: (pageIndex: number, annotationId: string) => {
+      if (!annotation.provides) {
+        return false;
+      }
+
+      try {
+        const api = annotation.provides as any;
+        
+        if (api.selectAnnotation) {
+          api.selectAnnotation(pageIndex, annotationId);
+          return true;
+        }
+
+        return false;
+      } catch (error) {
+        console.error('Failed to select annotation', error);
+        return false;
+      }
+    },
+
+    importAnnotations: async (annotations: Array<{ pageIndex: number; annotation: Record<string, unknown>, ctx?: { imageData?: string | ArrayBuffer } }>) => {
+      console.log('[useAnnotationAPI] Importing', annotations.length, 'annotations');
+      
+      if (!annotation.provides) {
+        console.error('[useAnnotationAPI] Annotation API not available');
+        return { success: 0, failed: annotations.length };
+      }
+
+      const api = annotation.provides as any;
+      let successCount = 0;
+      let failedCount = 0;
+
+      // Try native bulk import first (preferred method)
+      if (typeof api.importAnnotations === 'function') {
+        try {
+          console.log('[useAnnotationAPI] Using native bulk importAnnotations');
+          // The `importAnnotations` method likely takes an array of items, where each item
+          // can be just the annotation object, or an object with `annotation` and `ctx`.
+          const itemsToImport = annotations.map(item => ({
+            annotation: item.annotation,
+            pageIndex: item.pageIndex,
+            ...(item.ctx && { ctx: item.ctx }),
+          }));
+
+          console.log('[useAnnotationAPI] Items to import:', itemsToImport.map(i => ({ id: i.annotation.id, hasCtx: !!i.ctx })));
+
+          await api.importAnnotations(itemsToImport);
+          
+          if (api.commit) {
+            console.log('[useAnnotationAPI] Committing bulk import...');
+            api.commit();
+          }
+          
+          console.log('[useAnnotationAPI] Bulk import successful');
+          setAnnotationRenderVersion((v) => v + 1); // Force re-render
+          return { success: annotations.length, failed: 0 };
+        } catch (error) {
+          console.error('[useAnnotationAPI] Native bulk import failed:', error);
+          // Fall through to manual creation
+        }
+      }
+
+      // Fallback: create annotations one by one
+      console.log('[useAnnotationAPI] Using createAnnotation fallback');
+      for (const { pageIndex, annotation: annotationData, ctx } of annotations) {
+        try {
+          if (!api.createAnnotation) {
+            console.error('[useAnnotationAPI] createAnnotation method not available');
+            failedCount++;
+            continue;
+          }
+
+          // Ensure the annotation data is properly formatted
+          const formattedAnnotation = {
+            ...annotationData,
+            id: annotationData.id || undefined,
+            name: annotationData.name || annotationData.id || `imported-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          };
+
+          console.log(`[useAnnotationAPI] Creating annotation on page ${pageIndex}:`, formattedAnnotation.id || formattedAnnotation.name);
+          
+          // Enhanced context with multiple potential keys for image data
+          const enhancedCtx = ctx ? {
+            ...ctx,
+            image: ctx.imageData || ctx.image, // Try 'image' key as well
+            data: ctx.imageData, // Try 'data' key
+          } : undefined;
+
+          // Pass context if it exists
+          api.createAnnotation(pageIndex, formattedAnnotation, enhancedCtx);
+          
+          // Commit immediately for each stamp to ensure appearance generation
+          if (formattedAnnotation.type === PdfAnnotationSubtype.STAMP && api.commit) {
+             api.commit();
+             // Small delay to allow engine to process
+             await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          
+          successCount++;
+        } catch (error) {
+          console.error(`[useAnnotationAPI] Failed to create annotation on page ${pageIndex}:`, error);
+          failedCount++;
+        }
+      }
+
+      // Final commit for any remaining changes
+      if (api.commit) {
+        try {
+          console.log(`[useAnnotationAPI] Committing ${successCount} created annotations...`);
+          api.commit();
+          console.log('[useAnnotationAPI] Commit successful');
+          
+          // Force a re-render by triggering state update
+          if (setAnnotationRenderVersion) {
+            console.log('[useAnnotationAPI] Forcing re-render...');
+            setAnnotationRenderVersion((v) => v + 1);
+          }
+        } catch (error) {
+          console.error('[useAnnotationAPI] Failed to commit imported annotations:', error);
+        }
+      }
+
+      console.log(`[useAnnotationAPI] Import complete. Success: ${successCount}, Failed: ${failedCount}`);
+      return { success: successCount, failed: failedCount };
+    },
+
+    onStateChange: (callback: (state: unknown) => void) => {
+      if (!annotation.provides) {
+        return null;
+      }
+
+      const api = annotation.provides as any;
+
+      if (api.onStateChange) {
+        return api.onStateChange(callback);
+      }
+
+      return null;
+    },
+
   };
 }
