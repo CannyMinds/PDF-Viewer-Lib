@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { usePdfiumEngine } from "@embedpdf/engines/react";
 import { createPluginRegistration } from '@embedpdf/core';
-import { DocumentManagerPluginPackage } from "@embedpdf/plugin-document-manager";
+import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
 import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
-import { ScrollPluginPackage } from "@embedpdf/plugin-scroll";
+import { ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
 import { RenderPluginPackage } from "@embedpdf/plugin-render";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-manager";
@@ -94,18 +94,24 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
         if (!pdfBuffer || !isReady) return [];
 
         return [
-            createPluginRegistration(DocumentManagerPluginPackage, {
-                initialDocuments: [{
-                    buffer: pdfBuffer as ArrayBuffer,
-                    name: 'document.pdf',
-                    autoActivate: true,
-                    ...(password ? { password } : {}),
-                }],
+            createPluginRegistration(LoaderPluginPackage, {
+                loadingOptions: {
+                    type: "buffer",
+                    pdfFile: {
+                        id: `pdf-${Date.now()}`,
+                        content: pdfBuffer,
+                    },
+                    options: {
+                        password: password || "",
+                    },
+                },
             }),
             createPluginRegistration(ViewportPluginPackage, {
                 viewportGap: 10,
             }),
-            createPluginRegistration(ScrollPluginPackage),
+            createPluginRegistration(ScrollPluginPackage, {
+                strategy: ScrollStrategy.Vertical,
+            }),
             createPluginRegistration(InteractionManagerPluginPackage),
             createPluginRegistration(ZoomPluginPackage, {
                 defaultZoomLevel: 1.0,
@@ -132,23 +138,23 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             setIsPasswordChecked(checked);
         },
         zoomIn: () => {
-            console.warn('[usePDFViewer] zoomIn() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.zoom.zoomIn()');
+            // Will be implemented via component bridge
         },
         zoomOut: () => {
-            console.warn('[usePDFViewer] zoomOut() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.zoom.zoomOut()');
+            // Will be implemented via component bridge
         },
         requestZoom: (level: number) => {
-            console.warn('[usePDFViewer] requestZoom() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.zoom.setZoom(level)');
+            // Will be implemented via component bridge
         },
         getCurrentPage: () => {
-            console.warn('[usePDFViewer] getCurrentPage() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.navigation.getCurrentPage()');
+            // TODO: Implement get current page
             return null;
         },
         setPage: (page: number) => {
-            console.warn('[usePDFViewer] setPage() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.navigation.goToPage(page)');
+            // TODO: Implement set page functionality
         },
         getTotalPages: () => {
-            console.warn('[usePDFViewer] getTotalPages() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.navigation.getTotalPages()');
+            // TODO: Implement get total pages
             return null;
         }
     }), []);
