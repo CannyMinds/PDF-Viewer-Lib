@@ -12,7 +12,10 @@ import {
   TextField,
   ToggleButtonGroup,
   ToggleButton,
+  Tabs,
+  Tab,
 } from "@mui/material";
+import { CloudUpload } from "@mui/icons-material";
 
 const STAMP_TEMPLATES = [
   { id: "approved", label: "APPROVED", color: "#4caf50" },
@@ -24,9 +27,11 @@ const STAMP_TEMPLATES = [
 ];
 
 export default function StampDialog({ open, onClose, onSave, username = "User" }) {
+  const [activeTab, setActiveTab] = useState(0);
   const [selectedTemplate, setSelectedTemplate] = useState("approved");
   const [customText, setCustomText] = useState("");
   const [useCustom, setUseCustom] = useState(false);
+  const [uploadedImage, setUploadedImage] = useState(null);
 
   const generateStampSVG = () => {
     const template = STAMP_TEMPLATES.find((t) => t.id === selectedTemplate);
@@ -66,9 +71,26 @@ export default function StampDialog({ open, onClose, onSave, username = "User" }
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   };
 
+  const handleImageUpload = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setUploadedImage(e.target.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSave = () => {
-    const stampDataUrl = generateStampSVG();
-    onSave(stampDataUrl, true);
+    if (activeTab === 0) {
+      const stampDataUrl = generateStampSVG();
+      onSave(stampDataUrl, true);
+    } else {
+      if (uploadedImage) {
+        onSave(uploadedImage, false);
+      }
+    }
     handleClose();
   };
 
@@ -76,6 +98,8 @@ export default function StampDialog({ open, onClose, onSave, username = "User" }
     setUseCustom(false);
     setCustomText("");
     setSelectedTemplate("approved");
+    setUploadedImage(null);
+    setActiveTab(0);
     onClose();
   };
 
@@ -83,85 +107,153 @@ export default function StampDialog({ open, onClose, onSave, username = "User" }
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
       <DialogTitle>Add Stamp</DialogTitle>
       <DialogContent>
-        <Box sx={{ mt: 1 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            Select Stamp Template
-          </Typography>
-          <ToggleButtonGroup
-            value={selectedTemplate}
-            exclusive
-            onChange={(e, val) => {
-              if (val !== null) {
-                setSelectedTemplate(val);
-                setUseCustom(false);
-              }
-            }}
-            sx={{ mb: 2, flexWrap: "wrap" }}
-          >
-            {STAMP_TEMPLATES.map((template) => (
-              <ToggleButton
-                key={template.id}
-                value={template.id}
-                sx={{
-                  color: template.color,
-                  borderColor: template.color,
-                  "&.Mui-selected": {
-                    backgroundColor: `${template.color}22`,
+        <Tabs value={activeTab} onChange={(e, v) => setActiveTab(v)} sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}>
+          <Tab label="Templates" />
+          <Tab label="Upload Image" />
+        </Tabs>
+
+        {activeTab === 0 ? (
+          <Box sx={{ mt: 1 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Select Stamp Template
+            </Typography>
+            <ToggleButtonGroup
+              value={selectedTemplate}
+              exclusive
+              onChange={(e, val) => {
+                if (val !== null) {
+                  setSelectedTemplate(val);
+                  setUseCustom(false);
+                }
+              }}
+              sx={{ mb: 2, flexWrap: "wrap" }}
+            >
+              {STAMP_TEMPLATES.map((template) => (
+                <ToggleButton
+                  key={template.id}
+                  value={template.id}
+                  sx={{
+                    color: template.color,
                     borderColor: template.color,
-                    "&:hover": {
-                      backgroundColor: `${template.color}33`,
+                    "&.Mui-selected": {
+                      backgroundColor: `${template.color}22`,
+                      borderColor: template.color,
+                      "&:hover": {
+                        backgroundColor: `${template.color}33`,
+                      },
                     },
-                  },
+                  }}
+                >
+                  {template.label}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+
+            <Typography variant="subtitle2" sx={{ mb: 1, mt: 2 }}>
+              Or Use Custom Text
+            </Typography>
+            <TextField
+              fullWidth
+              placeholder="Enter custom stamp text"
+              value={customText}
+              onChange={(e) => {
+                setCustomText(e.target.value);
+                setUseCustom(e.target.value.trim() !== "");
+              }}
+              size="small"
+              inputProps={{ maxLength: 20 }}
+              helperText={`${customText.length}/20 characters`}
+            />
+
+            <Box
+              sx={{
+                mt: 3,
+                p: 2,
+                border: "1px solid #ddd",
+                borderRadius: 1,
+                backgroundColor: "#f5f5f5",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                minHeight: 120,
+              }}
+            >
+              <Typography variant="caption" color="text.secondary" sx={{ mb: 1 }}>
+                Preview:
+              </Typography>
+              <img
+                src={generateStampSVG()}
+                alt="Stamp Preview"
+                style={{ maxWidth: "100%", height: "auto" }}
+              />
+            </Box>
+          </Box>
+        ) : (
+          <Box sx={{ mt: 2, textAlign: 'center' }}>
+            <Button
+              component="label"
+              variant="outlined"
+              startIcon={<CloudUpload />}
+              sx={{ mb: 2 }}
+            >
+              Upload Image
+              <input
+                type="file"
+                hidden
+                accept="image/*"
+                onChange={handleImageUpload}
+              />
+            </Button>
+            <Typography variant="caption" display="block" color="text.secondary" sx={{ mb: 2 }}>
+              Supported formats: PNG, JPG, SVG
+            </Typography>
+            
+            {uploadedImage ? (
+              <Box
+                sx={{
+                  mt: 2,
+                  p: 2,
+                  border: "1px solid #ddd",
+                  borderRadius: 1,
+                  backgroundColor: "#f5f5f5",
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  minHeight: 120,
                 }}
               >
-                {template.label}
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
-
-          <Typography variant="subtitle2" sx={{ mb: 1, mt: 2 }}>
-            Or Use Custom Text
-          </Typography>
-          <TextField
-            fullWidth
-            placeholder="Enter custom stamp text"
-            value={customText}
-            onChange={(e) => {
-              setCustomText(e.target.value);
-              setUseCustom(e.target.value.trim() !== "");
-            }}
-            size="small"
-            inputProps={{ maxLength: 20 }}
-            helperText={`${customText.length}/20 characters`}
-          />
-
-          <Box
-            sx={{
-              mt: 3,
-              p: 2,
-              border: "1px solid #ddd",
-              borderRadius: 1,
-              backgroundColor: "#f5f5f5",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              minHeight: 120,
-            }}
-          >
-            <Typography variant="caption" color="text.secondary" sx={{ mb: 1 }}>
-              Preview:
-            </Typography>
-            <img
-              src={generateStampSVG()}
-              alt="Stamp Preview"
-              style={{ maxWidth: "100%", height: "auto" }}
-            />
+                <img
+                  src={uploadedImage}
+                  alt="Uploaded Stamp"
+                  style={{ maxWidth: "100%", maxHeight: "200px", objectFit: "contain" }}
+                />
+              </Box>
+            ) : (
+              <Box
+                sx={{
+                  mt: 2,
+                  p: 4,
+                  border: "1px dashed #ccc",
+                  borderRadius: 1,
+                  backgroundColor: "#fafafa",
+                  color: "text.secondary"
+                }}
+              >
+                <Typography variant="body2">
+                  No image selected
+                </Typography>
+              </Box>
+            )}
           </Box>
-        </Box>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={handleClose}>Cancel</Button>
-        <Button onClick={handleSave} variant="contained">
+        <Button 
+          onClick={handleSave} 
+          variant="contained"
+          disabled={activeTab === 1 && !uploadedImage}
+        >
           Add Stamp
         </Button>
       </DialogActions>
