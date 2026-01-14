@@ -18,8 +18,10 @@ import {
   Chip,
   Alert,
   Snackbar,
+  FormControlLabel,
+  Switch,
 } from "@mui/material";
-import { PictureAsPdf, Clear, Highlight, Draw, Delete, Save, CloudUpload, Print } from "@mui/icons-material";
+import { PictureAsPdf, Clear, Highlight, Draw, Delete, Save, CloudUpload, Print, Lock, LockOpen } from "@mui/icons-material";
 import ApprovalIcon from '@mui/icons-material/Approval';
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useDispatch, useSelector } from 'react-redux';
@@ -87,6 +89,7 @@ export default function Page() {
   const [showPasswordDialog, setShowPasswordDialog] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordResolver, setPasswordResolver] = useState(null);
+  const [passwordError, setPasswordError] = useState("");
   const [isHighlighterActive, setIsHighlighterActive] = useState(false);
   const [isStampActive, setIsStampActive] = useState(false);
   const [isSignatureActive, setIsSignatureActive] = useState(false);
@@ -102,6 +105,9 @@ export default function Page() {
   const [currentUser, setCurrentUser] = useState({ author: "Demo User", email: "demo@example.com", id: "user123" });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [annotationCount, setAnnotationCount] = useState(0);
+  // Permission testing state
+  const [disableAnnotations, setDisableAnnotations] = useState(false);
+  const [disablePrint, setDisablePrint] = useState(false);
   const pdfViewerRef = useRef(null);
   const lastSelectedIdRef = useRef(null);
 
@@ -138,6 +144,8 @@ export default function Page() {
       setTimeout(() => {
         const persistedData = localStorage.getItem('persist:pdf-annotations');
         if (persistedData) {
+
+
           console.log('✅ localStorage data found for key: persist:pdf-annotations');
           const parsed = JSON.parse(persistedData);
           const docs = JSON.parse(parsed.documents || '{}');
@@ -164,6 +172,7 @@ export default function Page() {
       }, 100);
     }
   };
+
 
   const handleClear = () => {
     setSelectedFile(null);
@@ -565,9 +574,15 @@ export default function Page() {
     }
   };
 
-  const handlePasswordRequest = () => {
+  const handlePasswordRequest = (fileName, isRetry = false) => {
     return new Promise((resolve) => {
       setPasswordResolver(() => resolve);
+      setPasswordInput(""); // Clear previous input
+      if (isRetry) {
+        setPasswordError("Incorrect password. Please try again.");
+      } else {
+        setPasswordError("");
+      }
       setShowPasswordDialog(true);
     });
   };
@@ -579,6 +594,7 @@ export default function Page() {
     setShowPasswordDialog(false);
     setPasswordResolver(null);
     setPasswordInput("");
+    setPasswordError("");
   };
 
   const handlePasswordCancel = () => {
@@ -588,6 +604,7 @@ export default function Page() {
     setShowPasswordDialog(false);
     setPasswordResolver(null);
     setPasswordInput("");
+    setPasswordError("");
   };
 
   const handleSignatureSave = async (signatureDataUrl) => {
@@ -1229,6 +1246,49 @@ export default function Page() {
               <Clear fontSize="small" />
             </IconButton>
           )}
+          {/* Permission Testing Toggles */}
+          <Box sx={{ display: 'flex', alignItems: 'center', ml: 2, gap: 1 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={disableAnnotations}
+                  onChange={(e) => setDisableAnnotations(e.target.checked)}
+                  sx={{
+                    '& .MuiSwitch-switchBase.Mui-checked': { color: '#f44336' },
+                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#f44336' }
+                  }}
+                />
+              }
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  {disableAnnotations ? <Lock fontSize="small" /> : <LockOpen fontSize="small" />}
+                  <Typography variant="caption">Block Annotations</Typography>
+                </Box>
+              }
+              sx={{ color: 'white', m: 0, '& .MuiTypography-root': { fontSize: '0.7rem' } }}
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={disablePrint}
+                  onChange={(e) => setDisablePrint(e.target.checked)}
+                  sx={{
+                    '& .MuiSwitch-switchBase.Mui-checked': { color: '#f44336' },
+                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#f44336' }
+                  }}
+                />
+              }
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  {disablePrint ? <Lock fontSize="small" /> : <LockOpen fontSize="small" />}
+                  <Typography variant="caption">Block Print</Typography>
+                </Box>
+              }
+              sx={{ color: 'white', m: 0, '& .MuiTypography-root': { fontSize: '0.7rem' } }}
+            />
+          </Box>
         </Toolbar>
       </AppBar>
       <Container maxWidth="lg" sx={{ mt: 2, mb: 2 }}>
@@ -1634,18 +1694,45 @@ export default function Page() {
                   id: currentUser.id
                 }}
                 annotationSelectionMenu={annotationSelectionMenu}
+                permissions={(disableAnnotations || disablePrint) ? {
+                  enforceDocumentPermissions: true,
+                  overrides: {
+                    modifyAnnotations: !disableAnnotations,
+                    print: !disablePrint,
+                  }
+                } : undefined}
               />
             </div>
           </Box>
         </Box>
       </Container>
 
-      <Dialog open={showPasswordDialog} onClose={handlePasswordCancel}>
+      <Dialog
+        open={showPasswordDialog}
+        disableEscapeKeyDown
+        onClose={(event, reason) => {
+          // Prevent closing on backdrop click
+          if (reason === 'backdropClick') return;
+        }}
+        slotProps={{
+          backdrop: {
+            sx: {
+              backdropFilter: 'blur(8px)',
+              backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            }
+          }
+        }}
+      >
         <DialogTitle>Password Required</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 2 }}>
             This PDF is password protected. Please enter the password to view it.
           </Typography>
+          {passwordError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {passwordError}
+            </Alert>
+          )}
           <TextField
             autoFocus
             margin="dense"
@@ -1655,6 +1742,7 @@ export default function Page() {
             variant="outlined"
             value={passwordInput}
             onChange={(e) => setPasswordInput(e.target.value)}
+            error={!!passwordError}
             onKeyPress={(e) => {
               if (e.key === "Enter") {
                 handlePasswordSubmit();
@@ -1663,7 +1751,6 @@ export default function Page() {
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={handlePasswordCancel}>Cancel</Button>
           <Button onClick={handlePasswordSubmit} variant="contained">
             Open PDF
           </Button>

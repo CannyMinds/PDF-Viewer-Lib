@@ -87,6 +87,16 @@ import {
   createScrollAPI
 } from "./components";
 
+export interface PermissionConfig {
+  enforceDocumentPermissions?: boolean;
+  overrides?: {
+    print?: boolean;
+    copy?: boolean;
+    modifyAnnotations?: boolean;
+    [key: string]: boolean | undefined;
+  };
+}
+
 export interface PDFViewerProps {
   pdfBuffer: Uint8Array | null;
   password?: string;
@@ -100,6 +110,7 @@ export interface PDFViewerProps {
   style?: React.CSSProperties;
   onPasswordRequest?: (callback: (password: string) => void) => void;
   annotationSelectionMenu?: AnnotationSelectionMenu;
+  permissions?: PermissionConfig;
 }
 
 export interface PDFViewerRef {
@@ -1255,7 +1266,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions },
   ref
 ): ReactElement | null {
   const {
@@ -1499,7 +1510,11 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
   }
 
   return (
-    <EmbedPDF engine={engine} plugins={plugins}>
+    <EmbedPDF
+      engine={engine}
+      plugins={plugins}
+      {...(permissions ? { config: { permissions } } : {})}
+    >
       {({ activeDocumentId }) => {
         console.log('[PDFViewer] EmbedPDF render:', {
           hasActiveDocumentId: !!activeDocumentId,
