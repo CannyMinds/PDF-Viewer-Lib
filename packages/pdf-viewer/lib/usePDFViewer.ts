@@ -10,7 +10,6 @@ import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-ma
 import { ZoomPluginPackage } from "@embedpdf/plugin-zoom";
 import { HistoryPluginPackage } from "@embedpdf/plugin-history";
 import { AnnotationPluginPackage } from "@embedpdf/plugin-annotation";
-import isPasswordProtected from "./utils/isPasswordProtected";
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
 import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
 
@@ -69,9 +68,9 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
         }
     }, [engineError]);
 
-    // Validate PDF buffer and wait for password check
+    // Validate PDF buffer
     useEffect(() => {
-        if (!pdfBuffer || !isPasswordChecked) {
+        if (!pdfBuffer) {
             setIsReady(false);
             return;
         }
@@ -86,9 +85,9 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             return;
         }
 
-        // PDF is valid and password has been checked by component
+        // PDF is valid
         setIsReady(true);
-    }, [pdfBuffer, password, isPasswordChecked]);
+    }, [pdfBuffer]);
 
     const plugins = useMemo(() => {
         if (!pdfBuffer || !isReady) return [];

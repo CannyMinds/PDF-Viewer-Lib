@@ -1,4 +1,4 @@
-import { EmbedPDF } from "@embedpdf/core/react";
+import { EmbedPDF, useDocumentState } from "@embedpdf/core/react";
 // FilePicker moved to plugin-document-manager in v2.x
 import {
   Viewport,
@@ -30,7 +30,7 @@ import {
   AnnotationPluginPackage,
 } from "@embedpdf/plugin-annotation/react";
 import { usePrintCapability, PrintPluginPackage } from "@embedpdf/plugin-print/react";
-import { PdfAnnotationSubtype } from "@embedpdf/models";
+import { PdfAnnotationSubtype, PdfErrorCode } from "@embedpdf/models";
 import { HistoryPluginPackage } from "@embedpdf/plugin-history";
 import { Rotation } from "@embedpdf/models";
 
@@ -55,11 +55,11 @@ import {
   type CSSProperties,
 } from "react";
 
-import isPasswordProtected from "./utils/isPasswordProtected";
+
 import { usePdfiumEngine } from "@embedpdf/engines/react";
 import { createPluginRegistration } from "@embedpdf/core";
 import { AnnotationFloatingToolbar } from "./components/AnnotationFloatingToolbar";
-import { DocumentManagerPluginPackage, DocumentContent } from "@embedpdf/plugin-document-manager/react";
+import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapability } from "@embedpdf/plugin-document-manager/react";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
 
@@ -84,16 +84,43 @@ import {
   createRotateAPI,
   createDownloadAPI,
   createStatusAPI,
-  createScrollAPI
+  createScrollAPI,
 } from "./components";
 
+/**
+ * Permission configuration for controlling PDF features.
+ * Allows overriding document permissions for annotations, printing, etc.
+ */
 export interface PermissionConfig {
+  /**
+   * When true (default): use PDF's permissions as the base, then apply overrides.
+   * When false: treat document as having all permissions allowed, then apply overrides.
+   */
   enforceDocumentPermissions?: boolean;
+
+  /**
+   * Explicit per-flag overrides.
+   * - true = force allow (even if PDF denies)
+   * - false = force deny (even if PDF allows)
+   * - undefined = use base permissions
+   */
   overrides?: {
+    /** Allow/deny printing */
     print?: boolean;
-    copy?: boolean;
+    /** Allow/deny modifying document contents */
+    modifyContents?: boolean;
+    /** Allow/deny copying/extracting text */
+    copyContents?: boolean;
+    /** Allow/deny modifying annotations (create/update/delete) */
     modifyAnnotations?: boolean;
-    [key: string]: boolean | undefined;
+    /** Allow/deny filling forms */
+    fillForms?: boolean;
+    /** Allow/deny extraction for accessibility */
+    extractForAccessibility?: boolean;
+    /** Allow/deny assembling document (insert, rotate, delete pages) */
+    assembleDocument?: boolean;
+    /** Allow/deny high quality print */
+    printHighQuality?: boolean;
   };
 }
 
@@ -108,8 +135,17 @@ export interface PDFViewerProps {
   };
   className?: string;
   style?: React.CSSProperties;
-  onPasswordRequest?: (callback: (password: string) => void) => void;
+  /**
+   * Callback when a password is required to open the document.
+   * @param fileName - The name of the file being opened
+   * @param isRetry - True if this is a retry after an incorrect password was entered
+   */
+  onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null>;
   annotationSelectionMenu?: AnnotationSelectionMenu;
+  /**
+   * Permission configuration for controlling PDF features.
+   * Use to override document restrictions for testing or specific use cases.
+   */
   permissions?: PermissionConfig;
 }
 
@@ -202,8 +238,81 @@ export interface PDFViewerRef {
   };
 }
 
+// Helper component to handle password logic without side-effects in render
+const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { documentState: any; documentId: string; onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null> }) => {
+  const { provides } = useDocumentManagerCapability();
+  const isHandlingPasswordRef = useRef<boolean>(false);
+  const hasHandledInitialRef = useRef<boolean>(false);
+
+  // Helper function to prompt for password and retry
+  const promptAndRetry = useCallback((fileName: string, isRetry: boolean) => {
+    if (!provides || !onPasswordRequest) return;
+
+    isHandlingPasswordRef.current = true;
+    console.log(`[PasswordLogic] ${isRetry ? 'Wrong password, prompting again' : 'Password required'} for:`, fileName);
+
+    onPasswordRequest(fileName, isRetry).then(password => {
+      if (password) {
+        console.log('[PasswordLogic] Attempting with password...');
+        const task = provides.retryDocument(documentId, { password });
+
+        // Use the Task's wait method to detect success/failure
+        task.wait(
+          // Success callback
+          () => {
+            console.log('[PasswordLogic] Password accepted!');
+            isHandlingPasswordRef.current = false;
+            hasHandledInitialRef.current = false;
+          },
+          // Error callback - wrong password, prompt again
+          (error: any) => {
+            console.log('[PasswordLogic] Password rejected, error:', error);
+            isHandlingPasswordRef.current = false;
+            // Recursively prompt again
+            promptAndRetry(fileName, true);
+          }
+        );
+      } else {
+        console.log('[PasswordLogic] No password provided (cancelled)');
+        isHandlingPasswordRef.current = false;
+      }
+    });
+  }, [provides, onPasswordRequest, documentId]);
+
+  useEffect(() => {
+    if (!documentState || !onPasswordRequest || !provides) return;
+
+    // Only process if errorCode is Password or isEncrypted is true
+    // Cast to any since isEncrypted is a new property in @embedpdf/models@2.2.0
+    if (documentState.errorCode !== PdfErrorCode.Password && !(documentState as any).isEncrypted) {
+      hasHandledInitialRef.current = false;
+      isHandlingPasswordRef.current = false;
+      return;
+    }
+
+    // Skip if we're already handling a password prompt
+    if (isHandlingPasswordRef.current) {
+      return;
+    }
+
+    // Only handle the initial password request here
+    // Subsequent retries are handled by the task.wait() error callback
+    if (!hasHandledInitialRef.current && !documentState.passwordProvided) {
+      hasHandledInitialRef.current = true;
+      promptAndRetry(documentState.name, false);
+    } else if (!hasHandledInitialRef.current && documentState.passwordProvided) {
+      // This catches the case where the component re-renders with a wrong password state
+      hasHandledInitialRef.current = true;
+      promptAndRetry(documentState.name, true);
+    }
+  }, [documentState?.errorCode, documentState?.passwordProvided, documentId, onPasswordRequest, provides, promptAndRetry]);
+
+  return null;
+};
+
 // Internal component that has access to plugin hooks
-const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean; annotationSelectionMenu?: AnnotationSelectionMenu; pdfBuffer?: Uint8Array | null; engine: any; documentId: string; userDetails?: { name?: string; email?: string; id?: string;[key: string]: any } }>(({ isReady, isLoading, hasPassword, annotationSelectionMenu, pdfBuffer, engine, documentId, userDetails }, ref) => {
+// ... (PDFContent definition continues)
+const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean; annotationSelectionMenu?: AnnotationSelectionMenu; pdfBuffer?: Uint8Array | null; engine: any; documentId: string; userDetails?: { name?: string; email?: string; id?: string;[key: string]: any }; onPasswordRequest?: (fileName?: string) => Promise<string | null>; }>(({ isReady, isLoading, hasPassword, annotationSelectionMenu, pdfBuffer, engine, documentId, userDetails, onPasswordRequest }, ref) => {
   // v2.x hooks now require documentId for multi-document support
   const zoom = useZoom(documentId);
   const search = useSearch(documentId);
@@ -211,6 +320,8 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
   const rotate = useRotate(documentId);
   const annotation = useAnnotationCapability();
   const print = usePrintCapability();
+  const documentManager = useDocumentManagerCapability(); // documentManager capability used in PasswordLogic
+  const docState = useDocumentState(documentId);
 
   // Track annotations with metadata
   const [annotationsMetadata, setAnnotationsMetadata] = useState<Map<string, any>>(new Map());
@@ -572,7 +683,9 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
     document: {
       isReady: () => isReady,
       isLoading: () => isLoading,
-      hasPassword: () => hasPassword,
+      hasPassword: () => {
+        return Boolean(docState?.errorCode === PdfErrorCode.Password || (docState as any)?.isEncrypted);
+      },
       getDocumentInfo: () => ({
         currentPage: scroll.state?.currentPage || 1,
         totalPages: scroll.state?.totalPages || 1,
@@ -1076,40 +1189,14 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
           console.error('Print plugin not available');
           return;
         }
-        try {
-          const printTask = print.provides.print({ includeAnnotations: true });
-          await new Promise<void>((resolve, reject) => {
-            printTask.wait(
-              () => resolve(),
-              (error) => {
-                console.error('Error printing with annotations:', error);
-                reject(error);
-              }
-            );
-          });
-        } catch (error) {
-          console.error('Error printing with annotations:', error);
-        }
+        print.provides.print({ includeAnnotations: true });
       },
       printWithoutAnnotations: async () => {
         if (!print.provides) {
           console.error('Print plugin not available');
           return;
         }
-        try {
-          const printTask = print.provides.print({ includeAnnotations: false });
-          await new Promise<void>((resolve, reject) => {
-            printTask.wait(
-              () => resolve(),
-              (error) => {
-                console.error('Error printing without annotations:', error);
-                reject(error);
-              }
-            );
-          });
-        } catch (error) {
-          console.error('Error printing without annotations:', error);
-        }
+        print.provides.print({ includeAnnotations: false });
       },
     },
   }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool]);
@@ -1220,45 +1307,60 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
 
   return (
     <DocumentContent documentId={documentId}>
-      {({ isLoaded }) => {
+      {({ isLoaded, documentState }) => {
         console.log('[PDFContent] DocumentContent render:', {
           documentId,
           isLoaded,
           hasEngine: !!engine,
-          hasPdfBuffer: !!pdfBuffer
+          hasPdfBuffer: !!pdfBuffer,
+          docState: documentState?.errorCode,
+          isEncrypted: (documentState as any)?.isEncrypted
         });
 
         if (isLoaded) {
           console.log('[PDFContent] Rendering Viewport and Scroller for document:', documentId);
         }
 
-        return isLoaded ? (
-          <GlobalPointerProvider documentId={documentId}>
-            <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
-              <Viewport
-                documentId={documentId}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  flexGrow: 1,
-                  backgroundColor: "#eeeeee",
-                  overflow: "auto",
-                  position: "relative",
-                }}
-              >
-                <Scroller documentId={documentId} renderPage={renderPage} />
-              </Viewport>
-            </div>
-          </GlobalPointerProvider>
-        ) : (
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#fff' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div>Loading PDF content...</div>
-              <div style={{ fontSize: '12px', marginTop: '8px', color: '#666' }}>
-                Document ID: {documentId.substring(0, 20)}...
+        return (
+          <>
+            <PasswordLogic
+              documentState={documentState}
+              documentId={documentId}
+              {...(onPasswordRequest ? { onPasswordRequest } : {})}
+            />
+            {isLoaded ? (
+              <GlobalPointerProvider documentId={documentId}>
+                <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+                  <Viewport
+                    documentId={documentId}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      flexGrow: 1,
+                      backgroundColor: "#eeeeee",
+                      overflow: "auto",
+                      position: "relative",
+                    }}
+                  >
+                    <Scroller documentId={documentId} renderPage={renderPage} />
+                  </Viewport>
+                </div>
+              </GlobalPointerProvider>
+            ) : (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#fff' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div>
+                    {documentState?.errorCode === PdfErrorCode.Password
+                      ? "Waiting for password..."
+                      : "Loading PDF content..."}
+                  </div>
+                  <div style={{ fontSize: '12px', marginTop: '8px', color: '#666' }}>
+                    Document ID: {documentId.substring(0, 20)}...
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+          </>
         );
       }}
     </DocumentContent>
@@ -1452,7 +1554,8 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
     const ready =
       engineLoading === false &&
       engineError === null &&
-      isPasswordChecked &&
+      engineLoading === false &&
+      engineError === null &&
       hasValidBuffer;
 
     console.log('[PDFViewer] Ready check:', {
@@ -1465,34 +1568,11 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
     });
 
     setIsReady(ready);
-  }, [engineLoading, engineError, pdfBuffer, isPasswordChecked]);
+    setIsReady(ready);
+  }, [engineLoading, engineError, pdfBuffer]);
 
-  useEffect(() => {
-    if (!pdfBuffer) {
-      return;
-    }
-
-    if (isPasswordProtected(pdfBuffer)) {
-      async function requestPassword() {
-        let password: string | null = null;
-        if (onPasswordRequest) {
-          onPasswordRequest((pwd) => {
-            password = pwd;
-            if (password) {
-              setPassword(password);
-            }
-            setIsPasswordChecked(true);
-          });
-        }
-      }
-
-      if (onPasswordRequest) {
-        requestPassword();
-      }
-    } else {
-      setIsPasswordChecked(true);
-    }
-  }, [pdfBuffer, onPasswordRequest]);
+  // Removed manual isPasswordProtected check in favor of handling it via DocumentManagerPlugin
+  // useEffect logic for onPasswordRequest moved to PDFContent
 
   if (!engine) {
     console.log('[PDFViewer] Waiting for engine...');
@@ -1528,12 +1608,13 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
             ref={ref}
             isReady={isReady}
             isLoading={engineLoading}
-            hasPassword={Boolean(password) || isPasswordProtected(pdfBuffer || new ArrayBuffer(0))}
+            hasPassword={Boolean(password) /* handled internally */}
             pdfBuffer={pdfBuffer || null}
             engine={engine}
             documentId={activeDocumentId}
             {...(userDetails ? { userDetails } : {})}
             {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
+            {...(onPasswordRequest ? { onPasswordRequest } : {})}
           />
         ) : (
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#f5f5f5' }}>
