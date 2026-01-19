@@ -1,14 +1,15 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { usePdfiumEngine } from "@embedpdf/engines/react";
 import { createPluginRegistration } from '@embedpdf/core';
-import { LoaderPluginPackage } from "@embedpdf/plugin-loader";
+import { DocumentManagerPluginPackage } from "@embedpdf/plugin-document-manager";
 import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
-import { ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
+import { ScrollPluginPackage } from "@embedpdf/plugin-scroll";
 import { RenderPluginPackage } from "@embedpdf/plugin-render";
 import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
 import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-manager";
 import { ZoomPluginPackage } from "@embedpdf/plugin-zoom";
-import isPasswordProtected from "./utils/isPasswordProtected";
+import { HistoryPluginPackage } from "@embedpdf/plugin-history";
+import { AnnotationPluginPackage } from "@embedpdf/plugin-annotation";
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
 import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
 
@@ -58,8 +59,6 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
 
     // Handle engine errors
     useEffect(() => {
-        console.log('[PDF Engine Error]: ', engineError);
-
         if (engineError) {
             setError(createPDFError(
                 PDFErrorType.ENGINE,
@@ -69,9 +68,9 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
         }
     }, [engineError]);
 
-    // Validate PDF buffer and wait for password check
+    // Validate PDF buffer
     useEffect(() => {
-        if (!pdfBuffer || !isPasswordChecked) {
+        if (!pdfBuffer) {
             setIsReady(false);
             return;
         }
@@ -86,32 +85,26 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             return;
         }
 
-        // PDF is valid and password has been checked by component
+        // PDF is valid
         setIsReady(true);
-    }, [pdfBuffer, password, isPasswordChecked]);
+    }, [pdfBuffer]);
 
     const plugins = useMemo(() => {
         if (!pdfBuffer || !isReady) return [];
 
         return [
-            createPluginRegistration(LoaderPluginPackage, {
-                loadingOptions: {
-                    type: "buffer",
-                    pdfFile: {
-                        id: `pdf-${Date.now()}`,
-                        content: pdfBuffer,
-                    },
-                    options: {
-                        password: password || "",
-                    },
-                },
+            createPluginRegistration(DocumentManagerPluginPackage, {
+                initialDocuments: [{
+                    buffer: pdfBuffer as ArrayBuffer,
+                    name: 'document.pdf',
+                    autoActivate: true,
+                    ...(password ? { password } : {}),
+                }],
             }),
             createPluginRegistration(ViewportPluginPackage, {
                 viewportGap: 10,
             }),
-            createPluginRegistration(ScrollPluginPackage, {
-                strategy: ScrollStrategy.Vertical,
-            }),
+            createPluginRegistration(ScrollPluginPackage),
             createPluginRegistration(InteractionManagerPluginPackage),
             createPluginRegistration(ZoomPluginPackage, {
                 defaultZoomLevel: 1.0,
@@ -120,6 +113,10 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             }),
             createPluginRegistration(RenderPluginPackage),
             createPluginRegistration(SelectionPluginPackage),
+            createPluginRegistration(HistoryPluginPackage),
+            createPluginRegistration(AnnotationPluginPackage, {
+                annotationAuthor: "User",
+            }),
         ];
     }, [pdfBuffer, password, isReady]);
 
@@ -134,23 +131,23 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             setIsPasswordChecked(checked);
         },
         zoomIn: () => {
-            // Will be implemented via component bridge
+            console.warn('[usePDFViewer] zoomIn() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.zoom.zoomIn()');
         },
         zoomOut: () => {
-            // Will be implemented via component bridge
+            console.warn('[usePDFViewer] zoomOut() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.zoom.zoomOut()');
         },
         requestZoom: (level: number) => {
-            // Will be implemented via component bridge
+            console.warn('[usePDFViewer] requestZoom() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.zoom.setZoom(level)');
         },
         getCurrentPage: () => {
-            // TODO: Implement get current page
+            console.warn('[usePDFViewer] getCurrentPage() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.navigation.getCurrentPage()');
             return null;
         },
         setPage: (page: number) => {
-            // TODO: Implement set page functionality
+            console.warn('[usePDFViewer] setPage() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.navigation.goToPage(page)');
         },
         getTotalPages: () => {
-            // TODO: Implement get total pages
+            console.warn('[usePDFViewer] getTotalPages() is not available from the hook instance. Use the PDFViewer component ref API instead: pdfViewerRef.current.navigation.getTotalPages()');
             return null;
         }
     }), []);
