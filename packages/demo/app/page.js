@@ -105,6 +105,9 @@ export default function Page() {
   const [currentUser, setCurrentUser] = useState({ author: "Demo User", email: "demo@example.com", id: "user123" });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [annotationCount, setAnnotationCount] = useState(0);
+  // Page count state
+  const [pdfCurrentPage, setPdfCurrentPage] = useState(1);
+  const [pdfTotalPages, setPdfTotalPages] = useState(0);
   // Permission testing state
   const [disableAnnotations, setDisableAnnotations] = useState(false);
   const [disablePrint, setDisablePrint] = useState(false);
@@ -120,6 +123,44 @@ export default function Page() {
   useEffect(() => {
     console.log('📈 annotationCount state changed to:', annotationCount);
   }, [annotationCount]);
+
+  // Poll for page count - aggressive polling when count is 0
+  useEffect(() => {
+    if (!pdfBuffer) {
+      setPdfCurrentPage(1);
+      setPdfTotalPages(0);
+      return;
+    }
+
+    const updatePageInfo = () => {
+      if (pdfViewerRef.current?.navigation) {
+        const current = pdfViewerRef.current.navigation.getCurrentPage() || 1;
+        const total = pdfViewerRef.current.navigation.getTotalPages(); // Don't fallback to 0
+
+        setPdfCurrentPage(current);
+
+        // Update total pages:
+        // - If we get a valid count (> 0), use it
+        // - If it's 0 (not yet loaded), keep showing "..."
+        if (typeof total === 'number') {
+          if (total > 0 && total !== pdfTotalPages) {
+            console.log('📄 Page count updated:', total);
+            setPdfTotalPages(total);
+          } else if (total === 0 && pdfTotalPages !== 0) {
+            // Reset to 0 if API returns 0 (not yet loaded)
+            console.log('📄 Page count reset to loading state');
+            setPdfTotalPages(0);
+          }
+        }
+      }
+    };
+
+    updatePageInfo();
+    // Poll faster (50ms) when page count unknown, slower (300ms) when known
+    const pollInterval = pdfTotalPages === 0 ? 50 : 300;
+    const interval = setInterval(updatePageInfo, pollInterval);
+    return () => clearInterval(interval);
+  }, [pdfBuffer, pdfTotalPages]);
 
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
@@ -1293,6 +1334,34 @@ export default function Page() {
       </AppBar>
       <Container maxWidth="lg" sx={{ mt: 2, mb: 2 }}>
         <Box sx={{ display: "flex", flexDirection: "column", minHeight: "85vh" }}>
+
+          {/* Page Count Display */}
+          {pdfBuffer && (
+            <Box sx={{ display: "flex", gap: 2, mb: 1, justifyContent: "center", alignItems: "center" }}>
+              <Paper sx={{ px: 2, py: 1, display: "flex", alignItems: "center", gap: 1, backgroundColor: "#f5f5f5" }}>
+                <Typography variant="body2" sx={{ fontWeight: "bold" }}>
+                  Page: {pdfCurrentPage} / {pdfTotalPages === 0 ? "..." : pdfTotalPages}
+                </Typography>
+                {pdfTotalPages === 0 && (
+                  <Chip label="Loading..." size="small" color="warning" />
+                )}
+              </Paper>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const nav = pdfViewerRef.current?.navigation;
+                  if (nav) {
+                    console.log('🔍 Navigation API debug:');
+                    console.log('  getCurrentPage():', nav.getCurrentPage());
+                    console.log('  getTotalPages():', nav.getTotalPages());
+                  }
+                }}
+              >
+                Debug Page Count
+              </Button>
+            </Box>
+          )}
 
           {/* Zoom Controls */}
           {pdfBuffer && (

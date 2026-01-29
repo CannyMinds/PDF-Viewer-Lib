@@ -13,7 +13,7 @@ import {
   RenderLayer,
   RenderPluginPackage,
 } from "@embedpdf/plugin-render/react";
-import { SelectionLayer } from "@embedpdf/plugin-selection/react";
+import { SelectionLayer, useSelectionCapability, SelectionPluginPackage } from "@embedpdf/plugin-selection/react";
 import { SearchLayer } from "@embedpdf/plugin-search/react";
 import {
   InteractionManagerPluginPackage,
@@ -60,7 +60,7 @@ import { usePdfiumEngine } from "@embedpdf/engines/react";
 import { createPluginRegistration } from "@embedpdf/core";
 import { AnnotationFloatingToolbar } from "./components/AnnotationFloatingToolbar";
 import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapability } from "@embedpdf/plugin-document-manager/react";
-import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
+// SelectionPluginPackage now imported from react subpath (includes CopyToClipboard utility)
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
 
 type AnnotationSelectionMenu = (props: {
@@ -141,12 +141,22 @@ export interface PDFViewerProps {
    * @param isRetry - True if this is a retry after an incorrect password was entered
    */
   onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null>;
+  /**
+   * Callback when the document loads with page count information.
+   * @param info - Object containing totalPages and other document info
+   */
+  onDocumentLoad?: (info: { totalPages: number; currentPage: number }) => void;
   annotationSelectionMenu?: AnnotationSelectionMenu;
   /**
    * Permission configuration for controlling PDF features.
    * Use to override document restrictions for testing or specific use cases.
    */
   permissions?: PermissionConfig;
+  /**
+   * Whether to hide the default internal loading UI.
+   * Useful when using a custom external loading indicator.
+   */
+  hideInternalLoading?: boolean;
 }
 
 export interface PDFViewerRef {
@@ -170,7 +180,8 @@ export interface PDFViewerRef {
   };
   selection: {
     clearSelection: () => void;
-    getSelectedText: () => string;
+    getSelectedText: () => Promise<string>;
+    copy: () => void;
   };
   search: {
     searchText: (keyword: string) => Promise<SearchAllPagesResult | null>;
@@ -312,7 +323,7 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
 
 // Internal component that has access to plugin hooks
 // ... (PDFContent definition continues)
-const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean; annotationSelectionMenu?: AnnotationSelectionMenu; pdfBuffer?: Uint8Array | null; engine: any; documentId: string; userDetails?: { name?: string; email?: string; id?: string;[key: string]: any }; onPasswordRequest?: (fileName?: string) => Promise<string | null>; }>(({ isReady, isLoading, hasPassword, annotationSelectionMenu, pdfBuffer, engine, documentId, userDetails, onPasswordRequest }, ref) => {
+const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean; annotationSelectionMenu?: AnnotationSelectionMenu; pdfBuffer?: Uint8Array | null; engine: any; documentId: string; userDetails?: { name?: string; email?: string; id?: string;[key: string]: any }; onPasswordRequest?: (fileName?: string) => Promise<string | null>; hideInternalLoading?: boolean; }>(({ isReady, isLoading, hasPassword, annotationSelectionMenu, pdfBuffer, engine, documentId, userDetails, onPasswordRequest, hideInternalLoading }, ref) => {
   // v2.x hooks now require documentId for multi-document support
   const zoom = useZoom(documentId);
   const search = useSearch(documentId);
@@ -321,10 +332,24 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
   const annotation = useAnnotationCapability();
   const print = usePrintCapability();
   const documentManager = useDocumentManagerCapability(); // documentManager capability used in PasswordLogic
+  const selection = useSelectionCapability();
   const docState = useDocumentState(documentId);
 
   // Track annotations with metadata
   const [annotationsMetadata, setAnnotationsMetadata] = useState<Map<string, any>>(new Map());
+
+  // Track verified totalPages from onLayoutReady event
+  // The useScroll hook initializes totalPages to 1, so we need to track when we get the real value
+  const [verifiedTotalPages, setVerifiedTotalPages] = useState<number>(0);
+
+  // Use a ref to store the latest verifiedTotalPages for use in useImperativeHandle
+  // This avoids stale closure issues where the function captures an old value
+  const verifiedTotalPagesRef = useRef<number>(0);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    verifiedTotalPagesRef.current = verifiedTotalPages;
+  }, [verifiedTotalPages]);
 
   // Track pending stamp image for placement
   // Track click-to-place callback
@@ -351,6 +376,97 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
       };
     }
   }, [userDetails]);
+
+  // Handle Ctrl+C for copying selected text
+  useEffect(() => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      // Check for Ctrl+C or Cmd+C (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selection.provides) {
+          try {
+            const textArray = await selection.provides.getSelectedText().toPromise();
+            const text = textArray.join(' ');
+            if (text && text.trim()) {
+              await navigator.clipboard.writeText(text);
+              console.log('Text copied to clipboard:', text);
+            }
+          } catch (err) {
+            console.error('Failed to copy text:', err);
+          }
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [selection]);
+
+  // Subscribe to onLayoutReady event to get verified totalPages
+  // The useScroll hook initializes totalPages to 1 before the document loads,
+  // so we need to listen to onLayoutReady which fires with the correct value
+  useEffect(() => {
+    // Reset verified total pages when document changes
+    setVerifiedTotalPages(0);
+
+    // Access the scroll capability directly for onLayoutReady subscription
+    const scrollCapability = scroll.provides;
+    if (!scrollCapability) return;
+
+    // Track if we've found the total to avoid stale closure issues
+    let foundTotal = false;
+
+    // Try to get totalPages from scroll.provides.getTotalPages() or scroll.state.totalPages
+    // after the document is loaded
+    const checkTotalPages = () => {
+      if (foundTotal) return; // Already found, skip
+
+      // First try scroll.provides.getTotalPages() if it exists
+      if (scrollCapability && typeof (scrollCapability as any).getTotalPages === 'function') {
+        const total = (scrollCapability as any).getTotalPages();
+        if (total > 0) {
+          console.log('[PDFContent] Got verified totalPages from scroll capability:', total);
+          setVerifiedTotalPages(total);
+          foundTotal = true; // Mark as found to stop further polling
+          return;
+        }
+      }
+
+      // Fallback: check scroll.state.totalPages
+      // The scroll state initializes totalPages to 1, so we accept any value > 1
+      // OR any value that comes from the document after it's been fully loaded
+      if (scroll.state && scroll.state.totalPages > 1) {
+        console.log('[PDFContent] Got verified totalPages from scroll state:', scroll.state.totalPages);
+        setVerifiedTotalPages(scroll.state.totalPages);
+        foundTotal = true;
+      }
+    };
+
+    // Check immediately
+    checkTotalPages();
+
+    // Also poll briefly to catch when it becomes available
+    const intervalId = setInterval(() => {
+      checkTotalPages();
+      if (foundTotal) {
+        clearInterval(intervalId);
+      }
+    }, 100);
+
+    // Stop polling after 3 seconds
+    const timeoutId = setTimeout(() => {
+      clearInterval(intervalId);
+    }, 3000);
+
+    return () => {
+      clearInterval(intervalId);
+      clearTimeout(timeoutId);
+    };
+  }, [scroll.provides, scroll.state, documentId, pdfBuffer]);
+
+  // Reset verified total pages when document changes
+  useEffect(() => {
+    setVerifiedTotalPages(0);
+  }, [documentId]);
 
   const waitForNextFrame = useCallback(async () => {
     if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
@@ -591,15 +707,24 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         return 1;
       },
       getTotalPages: () => {
-        if (scroll.state) {
-          return scroll.state.totalPages || 1;
+        // Use ref to get the latest value - avoids stale closure issues
+        const currentVerifiedTotal = verifiedTotalPagesRef.current;
+
+        // Use verifiedTotalPages which is set from onLayoutReady/getTotalPages()
+        // This avoids the issue where useScroll initializes totalPages to 1
+        if (currentVerifiedTotal > 0) {
+          return currentVerifiedTotal;
         }
-        return 1;
+        // Fallback: check if scroll.state has a value > 1 (since 1 is the default)
+        if (scroll.state && scroll.state.totalPages > 1) {
+          return scroll.state.totalPages;
+        }
+        return 0; // Return 0 to indicate page count not yet available
       },
       nextPage: () => {
         const currentPage = scroll.state?.currentPage || 1;
-        const totalPages = scroll.state?.totalPages || 1;
-        if (currentPage < totalPages && scroll.provides) {
+        const totalPages = verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages || 0);
+        if (totalPages > 1 && currentPage < totalPages && scroll.provides) {
           scroll.provides.scrollToPage({ pageNumber: currentPage + 1 });
         }
       },
@@ -615,21 +740,29 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         }
       },
       goToLastPage: () => {
-        const totalPages = scroll.state?.totalPages || 1;
-        if (scroll.provides) {
+        const totalPages = verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages || 0);
+        if (scroll.provides && totalPages > 1) {
           scroll.provides.scrollToPage({ pageNumber: totalPages });
         }
       },
     },
     selection: {
       clearSelection: () => {
-        // TODO: Implement when selection plugin hook is available
-        console.warn('clearSelection not yet implemented');
+        if (selection.provides) {
+          selection.provides.clear();
+        }
       },
-      getSelectedText: () => {
-        // TODO: Implement when selection plugin hook is available
-        console.warn('getSelectedText not yet implemented');
+      getSelectedText: async () => {
+        if (selection.provides) {
+          const text = await selection.provides.getSelectedText().toPromise();
+          return text.join(' ');
+        }
         return '';
+      },
+      copy: () => {
+        if (selection.provides) {
+          selection.provides.copyToClipboard();
+        }
       },
     },
     search: {
@@ -688,7 +821,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
       },
       getDocumentInfo: () => ({
         currentPage: scroll.state?.currentPage || 1,
-        totalPages: scroll.state?.totalPages || 1,
+        totalPages: verifiedTotalPagesRef.current > 0 ? verifiedTotalPagesRef.current : (scroll.state?.totalPages > 1 ? scroll.state.totalPages : 0),
         zoomLevel: zoom.state?.zoomLevel || 1.0,
         hasActiveSearch: Boolean(search.state),
       }),
@@ -987,10 +1120,6 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
             const result = await api.importAnnotations(processedAnnotations);
             console.log('[importAnnotations] Native import result:', result);
 
-            if (api.commit) {
-              api.commit();
-            }
-
             // Force re-render for stamps
             setAnnotationRenderVersion((v) => v + 1);
 
@@ -1018,17 +1147,14 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
           }
         }
 
-        // Commit all changes at once
-        if (api.commit && successCount > 0) {
+        if (successCount > 0) {
           try {
-            console.log('[importAnnotations] Committing annotation changes...');
-            api.commit();
-            console.log(`[importAnnotations] Committed ${successCount} imported annotations`);
+            console.log(`[importAnnotations] Imported ${successCount} annotations`);
 
             // Force re-render to ensure visibility
             setAnnotationRenderVersion((v) => v + 1);
           } catch (error) {
-            console.error('[importAnnotations] Failed to commit imported annotations', error);
+            console.error('[importAnnotations] Failed after importing annotations', error);
           }
         }
 
@@ -1077,7 +1203,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
 
         const exportData = {
           documentInfo: {
-            totalPages: scroll.state?.totalPages || 0,
+            totalPages: verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages > 1 ? scroll.state.totalPages : 0),
             exportedAt: new Date().toISOString(),
           },
           userDetails: userDetails || null,
@@ -1152,8 +1278,19 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
           console.error('Engine not available');
           return;
         }
+        const doc = docState?.document;
+        if (!doc) {
+          console.error('Document not available for saveAsCopy');
+          return;
+        }
         try {
-          const pdfBytes = await engine.saveAsCopy();
+          const task = engine.saveAsCopy(doc);
+          const pdfBytes = await new Promise<ArrayBuffer>((resolve, reject) => {
+            task.wait(
+              (buffer: ArrayBuffer) => resolve(buffer),
+              (error: any) => reject(error)
+            );
+          });
           const blob = new Blob([pdfBytes], { type: 'application/pdf' });
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
@@ -1199,7 +1336,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         print.provides.print({ includeAnnotations: false });
       },
     },
-  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool]);
+  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool, verifiedTotalPages, docState]);
 
   const currentZoom = zoom.state?.currentZoomLevel || 1;
 
@@ -1211,20 +1348,8 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
     document,
     rotation,
   }: any) => {
-    console.log('[PDFContent] renderPage called:', {
-      pageIndex,
-      scale,
-      width,
-      height,
-      rotation,
-      documentId: document?.id,
-      expectedDocumentId: documentId
-    });
-
-    // Swap width and height for 90° and 270° rotations
-    const isRotated90or270 = rotation === 1 || rotation === 3;
-    const containerWidth = isRotated90or270 ? height : width;
-    const containerHeight = isRotated90or270 ? width : height;
+    // Rely on internal layout handling from Rotate/RenderLayer
+    // Removing manual width/height swapping to match reference implementation
 
     const handlePageClick = (e: React.MouseEvent<HTMLDivElement>) => {
       // Only handle clicks if we're in click-to-place mode
@@ -1254,17 +1379,21 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
     return (
       <div
         style={{
-          width: containerWidth,
-          height: containerHeight,
           position: "relative",
-          backgroundColor: "white",
+          backgroundColor: "transparent",
           cursor: clickToPlaceCallbackRef.current ? 'crosshair' : 'default',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          // Reverting to simple block layout to debug scroll issues
+          // display: 'flex',
+          // justifyContent: 'center',
+          // width: '100%',
         }}
         draggable={false}
         onClick={handlePageClick}
       >
         <Rotate
-          key={`${document?.id ?? 'doc'}-${pageIndex}-${annotationRenderVersion}`}
+          key={`${document?.id ?? 'doc'}-${pageIndex}-${rotation}`}
           documentId={documentId}
           pageIndex={pageIndex}
           rotation={rotation}
@@ -1285,7 +1414,11 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
               scale={effectiveScale}
               style={{ pointerEvents: "none" }}
             />
-            <SelectionLayer documentId={documentId} pageIndex={pageIndex} scale={effectiveScale} />
+            <SelectionLayer
+              documentId={documentId}
+              pageIndex={pageIndex}
+              scale={effectiveScale}
+            />
             <AnnotationLayer
               key={`annotation-layer-${pageIndex}-${annotationRenderVersion}`}
               documentId={documentId}
@@ -1293,14 +1426,14 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
               scale={effectiveScale}
             />
           </PagePointerProvider>
-          <AnnotationFloatingToolbar
-            annotationPlugin={annotation as any}
-            documentId={documentId}
-            pageIndex={pageIndex}
-            scale={effectiveScale}
-            pageSize={{ width: width / effectiveScale, height: height / effectiveScale }}
-          />
         </Rotate>
+        <AnnotationFloatingToolbar
+          annotationPlugin={annotation as any}
+          documentId={documentId}
+          pageIndex={pageIndex}
+          scale={effectiveScale}
+          pageSize={{ width: width / effectiveScale, height: height / effectiveScale }}
+        />
       </div>
     );
   }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom]);
@@ -1330,7 +1463,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
             />
             {isLoaded ? (
               <GlobalPointerProvider documentId={documentId}>
-                <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+                <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", userSelect: 'none', WebkitUserSelect: 'none' }}>
                   <Viewport
                     documentId={documentId}
                     style={{
@@ -1340,6 +1473,8 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
                       backgroundColor: "#eeeeee",
                       overflow: "auto",
                       position: "relative",
+                      userSelect: 'none',
+                      WebkitUserSelect: 'none',
                     }}
                   >
                     <Scroller documentId={documentId} renderPage={renderPage} />
@@ -1347,18 +1482,20 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
                 </div>
               </GlobalPointerProvider>
             ) : (
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#fff' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div>
-                    {documentState?.errorCode === PdfErrorCode.Password
-                      ? "Waiting for password..."
-                      : "Loading PDF content..."}
-                  </div>
-                  <div style={{ fontSize: '12px', marginTop: '8px', color: '#666' }}>
-                    Document ID: {documentId.substring(0, 20)}...
+              hideInternalLoading ? null : (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#fff' }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div>
+                      {documentState?.errorCode === PdfErrorCode.Password
+                        ? "Waiting for password..."
+                        : "Loading PDF content..."}
+                    </div>
+                    <div style={{ fontSize: '12px', marginTop: '8px', color: '#666' }}>
+                      Document ID: {documentId.substring(0, 20)}...
+                    </div>
                   </div>
                 </div>
-              </div>
+              )
             )}
           </>
         );
@@ -1368,7 +1505,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading },
   ref
 ): ReactElement | null {
   const {
@@ -1417,55 +1554,6 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
       console.error('[PDFViewer] Engine error details:', JSON.stringify(engineError, null, 2));
     }
   }, [engineError]);
-
-  // Force initial zoom after document loads to trigger rendering
-  // This is a workaround for the zoom not being applied automatically on initial load
-  const hasTriggeredInitialZoom = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!engine || !documentId) return;
-
-    console.log('[PDFViewer] Monitoring document loading for:', documentId);
-
-    // Wait for document to load, then force a zoom trigger
-    const timeoutId = setTimeout(() => {
-      console.log('[PDFViewer] Triggering initial zoom to force render');
-
-      // Only do this once per document
-      if (!hasTriggeredInitialZoom.current.has(documentId)) {
-        hasTriggeredInitialZoom.current.add(documentId);
-
-        // Force a tiny zoom change to trigger the viewport to render
-        // This is a known workaround for EmbedPDF v2.x initial render issue
-        const attemptZoomTrigger = () => {
-          try {
-            // Try to access the zoom API through the ref
-            const zoomAPI = (ref as any)?.current?.zoom;
-            if (zoomAPI && typeof zoomAPI.getZoom === 'function' && typeof zoomAPI.setZoom === 'function') {
-              const currentZoom = zoomAPI.getZoom();
-              console.log('[PDFViewer] Current zoom:', currentZoom, 'Applying micro-adjustment');
-
-              // Apply a tiny zoom change and revert
-              zoomAPI.setZoom(typeof currentZoom === 'number' ? currentZoom * 1.0001 : 1.0);
-              setTimeout(() => {
-                zoomAPI.setZoom(typeof currentZoom === 'number' ? currentZoom : 1.0);
-                console.log('[PDFViewer] Zoom trigger complete - PDF should now be visible');
-              }, 50);
-            } else {
-              console.warn('[PDFViewer] Zoom API not available yet, retrying...');
-              setTimeout(attemptZoomTrigger, 200);
-            }
-          } catch (error) {
-            console.error('[PDFViewer] Error triggering initial zoom:', error);
-          }
-        };
-
-        attemptZoomTrigger();
-      }
-    }, 500);
-
-    return () => clearTimeout(timeoutId);
-  }, [engine, documentId, ref]);
 
   const plugins = useMemo(() => {
     if (!pdfBuffer || !isReady || !documentId) {
@@ -1604,19 +1692,22 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
         });
 
         return activeDocumentId ? (
-          <PDFContent
-            ref={ref}
-            isReady={isReady}
-            isLoading={engineLoading}
-            hasPassword={Boolean(password) /* handled internally */}
-            pdfBuffer={pdfBuffer || null}
-            engine={engine}
-            documentId={activeDocumentId}
-            {...(userDetails ? { userDetails } : {})}
-            {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
-            {...(onPasswordRequest ? { onPasswordRequest } : {})}
-          />
-        ) : (
+          <>
+            <PDFContent
+              ref={ref}
+              isReady={isReady}
+              isLoading={engineLoading}
+              hasPassword={Boolean(password) /* handled internally */}
+              pdfBuffer={pdfBuffer || null}
+              engine={engine}
+              documentId={activeDocumentId}
+              {...(userDetails ? { userDetails } : {})}
+              {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
+              {...(onPasswordRequest ? { onPasswordRequest } : {})}
+              hideInternalLoading={!!hideInternalLoading}
+            />
+          </>
+        ) : hideInternalLoading ? null : (
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#f5f5f5' }}>
             <div style={{ textAlign: 'center' }}>
               <div>Loading PDF...</div>
@@ -1627,7 +1718,7 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
           </div>
         );
       }}
-    </EmbedPDF>
+    </EmbedPDF >
   );
 });
 

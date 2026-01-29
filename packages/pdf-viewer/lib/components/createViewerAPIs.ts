@@ -66,12 +66,16 @@ export function createNavigationAPI(scroll: ScrollPlugin) {
       return scroll.state?.currentPage || 1;
     },
     getTotalPages: () => {
-      return scroll.state?.totalPages || 1;
+      // Return 0 if page count not yet available
+      if (scroll.state && scroll.state.totalPages > 0) {
+        return scroll.state.totalPages;
+      }
+      return 0;
     },
     nextPage: () => {
       const currentPage = scroll.state?.currentPage || 1;
-      const totalPages = scroll.state?.totalPages || 1;
-      if (currentPage < totalPages && scroll.provides) {
+      const totalPages = scroll.state?.totalPages || 0;
+      if (totalPages > 0 && currentPage < totalPages && scroll.provides) {
         scroll.provides.scrollToPage({ pageNumber: currentPage + 1 });
       }
     },
@@ -87,8 +91,8 @@ export function createNavigationAPI(scroll: ScrollPlugin) {
       }
     },
     goToLastPage: () => {
-      const totalPages = scroll.state?.totalPages || 1;
-      if (scroll.provides) {
+      const totalPages = scroll.state?.totalPages || 0;
+      if (scroll.provides && totalPages > 0) {
         scroll.provides.scrollToPage({ pageNumber: totalPages });
       }
     },
@@ -224,7 +228,7 @@ export function createStatusAPI(params: CreateAPIsParams) {
     hasPassword: () => hasPassword,
     getDocumentInfo: () => ({
       currentPage: scroll.state?.currentPage || 1,
-      totalPages: scroll.state?.totalPages || 1,
+      totalPages: scroll.state?.totalPages || 0,
       zoomLevel: zoom.state?.zoomLevel || 1.0,
       hasActiveSearch: Boolean(search.state),
     }),
