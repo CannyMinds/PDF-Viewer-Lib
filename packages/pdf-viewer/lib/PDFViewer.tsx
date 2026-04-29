@@ -34,6 +34,17 @@ import { PdfAnnotationSubtype, PdfErrorCode } from "@embedpdf/models";
 import { HistoryPluginPackage } from "@embedpdf/plugin-history";
 import { Rotation } from "@embedpdf/models";
 
+// v2.14.1 — annotation plugin (gated; needs full plugin migration from 1.3.x)
+// TODO(plugin-migration): wire AnnotationPluginPackage in createPluginRegistration list,
+// and replace the `annotationCap as any` casts below with `useAnnotationCapability().provides`.
+// See packages/plugin-annotation/src/lib/types.ts (AnnotationCapability) in embed-pdf-viewer-main.
+// import {
+//   useAnnotationCapability,
+//   AnnotationPluginPackage,
+// } from "@embedpdf/plugin-annotation/react";
+import type { LockMode } from "./lock-types";
+import type { PdfAnnotationObject } from "@embedpdf/models";
+
 // Re-export for consuming apps
 export { ZoomMode, Rotation, usePrintCapability };
 export type { SearchState } from "@embedpdf/plugin-search";
@@ -213,6 +224,22 @@ export interface PDFViewerRef {
     setRotation: (rotation: Rotation) => void;
     getRotation: () => Rotation;
   };
+  /**
+   * Annotation namespace — v2.14.1 surface.
+   *
+   * Tool activation (highlighter / stamp / signature) and CRUD methods come from
+   * @embedpdf/plugin-annotation. The lock predicates below let consumers ask the
+   * engine whether an annotation is interactive / structurally locked / content
+   * locked, instead of re-deriving from the flag array.
+   *
+   * Consumers express per-user permission by stamping `flags` at import time:
+   *   ['readOnly']                 → fully non-interactive (no select/edit/delete)
+   *   ['locked', 'lockedContents'] → selectable + deletable, but immovable + content frozen
+   *   ['hidden'] | ['noView']      → not rendered at all
+   *
+   * Document-level: `setLocked({ type: LockModeType.All })` blocks creation of
+   * new annotations entirely, including via keyboard shortcuts.
+   */
   annotation: {
     activateHighlighter: () => void;
     deactivateHighlighter: () => void;
@@ -226,18 +253,30 @@ export interface PDFViewerRef {
     addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: { author?: string; customData?: any }) => boolean;
     addSignatureAnnotation: (signatureDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number) => boolean;
     deleteSelectedAnnotation: () => boolean;
-    getSelectedAnnotation: () => any;
+    getSelectedAnnotation: () => PdfAnnotationObject | null;
     getSelectedAnnotationDetails: () => any;
-    getAllAnnotations: () => any[];
-    getAllAnnotationsWithMetadata: () => any[];
+    getAllAnnotations: () => PdfAnnotationObject[];
+    getAllAnnotationsWithMetadata: () => PdfAnnotationObject[];
     exportAnnotationsAsJSON: () => string;
     onAnnotationEvent: (callback: (event: any) => void) => (() => void) | null;
     updateAnnotation: (pageIndex: number, annotationId: string, updates: Record<string, any>) => boolean;
-    selectAnnotation: (pageIndex: number, annotationId: string) => boolean;
+    selectAnnotation: (pageIndex: number, annotationId: string | null) => boolean;
     importAnnotations: (annotations: Array<{ pageIndex: number; annotation: Record<string, any> }>) => Promise<{ success: number; failed: number }>;
     onStateChange: (callback: (state: any) => void) => (() => void) | null;
     enableClickToPlace: (callback: (clickData: { pageIndex: number; x: number; y: number; pageWidth?: number; pageHeight?: number }) => void) => void;
     placeStampAtPosition: (imageDataUrl: string, pageIndex: number, x: number, y: number) => void;
+
+    // v2.14.1 lock predicates — engine-enforced
+    /** False if `noView | hidden | readOnly` flags or category-locked. */
+    isAnnotationInteractive: (annotation: PdfAnnotationObject) => boolean;
+    /** True if non-interactive OR has `locked` flag (move/resize/rotate frozen). */
+    isAnnotationStructurallyLocked: (annotation: PdfAnnotationObject) => boolean;
+    /** True if non-interactive OR has `lockedContents` flag (e.g. FreeText text frozen). */
+    isAnnotationContentLocked: (annotation: PdfAnnotationObject) => boolean;
+
+    // v2.14.1 document-level lock mode
+    setLocked: (mode: LockMode) => void;
+    getLocked: () => LockMode;
   };
   download: {
     downloadWithAnnotations: (filename?: string) => Promise<void>;
@@ -1047,7 +1086,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
           return false;
         }
       },
-      selectAnnotation: (pageIndex: number, annotationId: string) => {
+      selectAnnotation: (pageIndex: number, annotationId: string | null) => {
         if (!annotation.provides) {
           console.warn('Annotation API not available');
           return false;
@@ -1270,6 +1309,30 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         }
 
         clickToPlaceCallbackRef.current = null;
+      },
+
+      // v2.14.1 lock predicates — engine-enforced
+      isAnnotationInteractive: (ann) => {
+        const cap = annotation.provides as any;
+        return cap?.isAnnotationInteractive?.(ann) ?? true;
+      },
+      isAnnotationStructurallyLocked: (ann) => {
+        const cap = annotation.provides as any;
+        return cap?.isAnnotationStructurallyLocked?.(ann) ?? false;
+      },
+      isAnnotationContentLocked: (ann) => {
+        const cap = annotation.provides as any;
+        return cap?.isAnnotationContentLocked?.(ann) ?? false;
+      },
+
+      // v2.14.1 document-level lock mode
+      setLocked: (mode) => {
+        const cap = annotation.provides as any;
+        cap?.setLocked?.(mode);
+      },
+      getLocked: () => {
+        const cap = annotation.provides as any;
+        return cap?.getLocked?.() ?? ({ type: 0 /* LockModeType.None */ } as LockMode);
       },
     },
     download: {
