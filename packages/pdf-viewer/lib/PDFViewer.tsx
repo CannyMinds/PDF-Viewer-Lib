@@ -8,6 +8,7 @@ import {
   Scroller,
   ScrollPluginPackage,
   ScrollStrategy,
+  useScrollPlugin,
 } from "@embedpdf/plugin-scroll/react";
 import {
   RenderLayer,
@@ -56,6 +57,7 @@ import type { SearchState } from "@embedpdf/plugin-search";
 
 import {
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   forwardRef,
   useMemo,
@@ -80,22 +82,41 @@ import { SearchPluginPackage } from "@embedpdf/plugin-search";
 // ---------------------------------------------------------------------------
 const TwoPageScroller = ({
   documentId,
-  scroll: scrollPlugin,
   renderPage,
 }: {
   documentId: string;
-  scroll: ReturnType<typeof useScroll>;
   renderPage: (props: any) => React.ReactNode;
 }) => {
-  const docScrollState = (scrollPlugin.state as any)?.documents?.[documentId];
-  const virtualItems: any[] = docScrollState?.virtualItems ?? [];
+  const { plugin: scrollPlugin } = useScrollPlugin();
+  const [layoutData, setLayoutData] = useState<any>(null);
 
-  // Build a flat list of PageLayout objects from all virtual items
+  useEffect(() => {
+    if (!scrollPlugin || !documentId) return;
+    const unsubscribe = (scrollPlugin as any).onScrollerData(documentId, (newLayout: any) => {
+      setLayoutData(newLayout);
+    });
+    return () => {
+      unsubscribe();
+      setLayoutData(null);
+      (scrollPlugin as any).clearLayoutReady?.(documentId);
+    };
+  }, [scrollPlugin, documentId]);
+
+  useLayoutEffect(() => {
+    if (!scrollPlugin || !documentId || !layoutData) return;
+    (scrollPlugin as any).setLayoutReady?.(documentId);
+  }, [scrollPlugin, documentId, layoutData]);
+
+  if (!layoutData) return null;
+
+  // Flatten all PageLayout objects from all items
   const allPages: any[] = [];
-  for (const item of virtualItems) {
-    if (Array.isArray(item.pageLayouts)) {
-      for (const pl of item.pageLayouts) {
-        allPages.push(pl);
+  if (Array.isArray(layoutData.items)) {
+    for (const item of layoutData.items) {
+      if (Array.isArray(item.pageLayouts)) {
+        for (const pl of item.pageLayouts) {
+          allPages.push(pl);
+        }
       }
     }
   }
@@ -133,13 +154,23 @@ const TwoPageScroller = ({
             display: 'flex',
             flexDirection: 'row',
             alignItems: 'flex-start',
-            gap: 4,
+            gap: 8,
             backgroundColor: '#fff',
             boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+            padding: 8,
+            borderRadius: 4,
           }}
         >
           {spread.map((pageLayout: any) => (
-            <div key={pageLayout.pageIndex} style={{ flexShrink: 0 }}>
+            <div
+              key={pageLayout.pageIndex}
+              style={{
+                width: `${pageLayout.rotatedWidth}px`,
+                height: `${pageLayout.rotatedHeight}px`,
+                position: 'relative',
+                flexShrink: 0,
+              }}
+            >
               {renderPage(pageLayout)}
             </div>
           ))}
@@ -1710,7 +1741,6 @@ const PDFContent = forwardRef<PDFViewerRef, {
                     {twoPageMode ? (
                       <TwoPageScroller
                         documentId={documentId}
-                        scroll={scroll}
                         renderPage={renderPage}
                       />
                     ) : (

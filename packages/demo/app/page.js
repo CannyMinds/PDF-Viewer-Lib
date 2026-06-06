@@ -1828,7 +1828,6 @@ export default function Page() {
                 pdfBuffer={pdfBuffer}
                 totalPages={pdfTotalPages}
                 currentPage={pdfCurrentPage}
-                twoPageMode={twoPageMode}
                 onPageClick={(pageNum) => {
                   pdfViewerRef.current?.navigation?.goToPage(pageNum);
                 }}
