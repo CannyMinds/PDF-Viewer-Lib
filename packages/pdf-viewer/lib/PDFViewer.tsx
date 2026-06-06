@@ -168,6 +168,9 @@ export interface PDFViewerProps {
    * Useful when using a custom external loading indicator.
    */
   hideInternalLoading?: boolean;
+  twoPageMode?: boolean | undefined;
+  scrollStrategy?: ScrollStrategy | undefined;
+  onPageChange?: ((page: number) => void) | undefined;
 }
 
 export interface PDFViewerRef {
@@ -188,6 +191,11 @@ export interface PDFViewerRef {
     previousPage: () => void;
     goToFirstPage: () => void;
     goToLastPage: () => void;
+    setScrollStrategy: (strategy: ScrollStrategy) => void;
+    getLayout: () => any;
+    setTwoPageMode: (enabled: boolean) => void;
+    getTwoPageMode: () => boolean;
+    onPageChange: (listener: (event: any) => void) => () => void;
   };
   selection: {
     clearSelection: () => void;
@@ -362,7 +370,35 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
 
 // Internal component that has access to plugin hooks
 // ... (PDFContent definition continues)
-const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean; annotationSelectionMenu?: AnnotationSelectionMenu; pdfBuffer?: Uint8Array | null; engine: any; documentId: string; userDetails?: { name?: string; email?: string; id?: string;[key: string]: any }; onPasswordRequest?: (fileName?: string) => Promise<string | null>; hideInternalLoading?: boolean; }>(({ isReady, isLoading, hasPassword, annotationSelectionMenu, pdfBuffer, engine, documentId, userDetails, onPasswordRequest, hideInternalLoading }, ref) => {
+const PDFContent = forwardRef<PDFViewerRef, {
+  isReady: boolean;
+  isLoading: boolean;
+  hasPassword: boolean;
+  annotationSelectionMenu?: AnnotationSelectionMenu;
+  pdfBuffer?: Uint8Array | null;
+  engine: any;
+  documentId: string;
+  userDetails?: { name?: string; email?: string; id?: string;[key: string]: any };
+  onPasswordRequest?: (fileName?: string) => Promise<string | null>;
+  hideInternalLoading?: boolean;
+  twoPageMode?: boolean | undefined;
+  scrollStrategy?: ScrollStrategy | undefined;
+  onPageChange?: ((page: number) => void) | undefined;
+}>(({
+  isReady,
+  isLoading,
+  hasPassword,
+  annotationSelectionMenu,
+  pdfBuffer,
+  engine,
+  documentId,
+  userDetails,
+  onPasswordRequest,
+  hideInternalLoading,
+  twoPageMode,
+  scrollStrategy,
+  onPageChange
+}, ref) => {
   // v2.x hooks now require documentId for multi-document support
   const zoom = useZoom(documentId);
   const search = useSearch(documentId);
@@ -389,6 +425,31 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
   useEffect(() => {
     verifiedTotalPagesRef.current = verifiedTotalPages;
   }, [verifiedTotalPages]);
+
+  // Apply two-page mode and scroll strategy from props inside the document context
+  useEffect(() => {
+    if (!scroll.provides) return;
+    if (twoPageMode !== undefined) {
+      // setTwoPageMode is added by the pnpm patch in DMS-Client-Drive; cast to any for type safety
+      (scroll.provides as any).setTwoPageMode?.(twoPageMode);
+    }
+    if (scrollStrategy !== undefined) {
+      scroll.provides.setScrollStrategy(scrollStrategy);
+    }
+  }, [twoPageMode, scrollStrategy, scroll.provides]);
+
+  // Subscribe to page changes from scrolling inside the document context
+  useEffect(() => {
+    if (!scroll.provides || !onPageChange) return;
+    const unsubscribe = scroll.provides.onPageChange((event) => {
+      if (event?.pageNumber) {
+        onPageChange(event.pageNumber);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [scroll.provides, onPageChange]);
 
   // Track pending stamp image for placement
   // Track click-to-place callback
@@ -783,6 +844,36 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         if (scroll.provides && totalPages > 1) {
           scroll.provides.scrollToPage({ pageNumber: totalPages });
         }
+      },
+      setScrollStrategy: (strategy: ScrollStrategy) => {
+        if (scroll.provides) {
+          scroll.provides.setScrollStrategy(strategy);
+        }
+      },
+      getLayout: () => {
+        if (scroll.provides) {
+          return scroll.provides.getLayout();
+        }
+        return null;
+      },
+      setTwoPageMode: (enabled: boolean) => {
+        if (scroll.provides) {
+          // setTwoPageMode is added by the pnpm patch; cast to any
+          (scroll.provides as any).setTwoPageMode?.(enabled);
+        }
+      },
+      getTwoPageMode: () => {
+        if (scroll.provides) {
+          // getTwoPageMode is added by the pnpm patch; cast to any
+          return (scroll.provides as any).getTwoPageMode?.() ?? false;
+        }
+        return false;
+      },
+      onPageChange: (listener: (event: any) => void) => {
+        if (scroll.provides) {
+          return scroll.provides.onPageChange(listener);
+        }
+        return () => {};
       },
     },
     selection: {
@@ -1568,7 +1659,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
   ref
 ): ReactElement | null {
   const {
@@ -1768,6 +1859,9 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
               {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
               {...(onPasswordRequest ? { onPasswordRequest } : {})}
               hideInternalLoading={!!hideInternalLoading}
+              twoPageMode={twoPageMode}
+              scrollStrategy={scrollStrategy}
+              onPageChange={onPageChange}
             />
           </>
         ) : hideInternalLoading ? null : (

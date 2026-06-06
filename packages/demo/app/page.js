@@ -1,6 +1,6 @@
 "use client";
 
-import { PDFViewer } from "../../pdf-viewer/lib";
+import { PDFViewer, PdfThumbnailSidebar } from "../../pdf-viewer/lib";
 import {
   Container,
   Typography,
@@ -21,7 +21,7 @@ import {
   FormControlLabel,
   Switch,
 } from "@mui/material";
-import { PictureAsPdf, Clear, Highlight, Draw, Delete, Save, CloudUpload, Print, Lock, LockOpen } from "@mui/icons-material";
+import { PictureAsPdf, Clear, Highlight, Draw, Delete, Save, CloudUpload, Print, Lock, LockOpen, ViewSidebar } from "@mui/icons-material";
 import ApprovalIcon from '@mui/icons-material/Approval';
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useDispatch, useSelector } from 'react-redux';
@@ -111,6 +111,8 @@ export default function Page() {
   // Permission testing state
   const [disableAnnotations, setDisableAnnotations] = useState(false);
   const [disablePrint, setDisablePrint] = useState(false);
+  // Thumbnail sidebar state
+  const [showThumbnails, setShowThumbnails] = useState(false);
   const pdfViewerRef = useRef(null);
   const lastSelectedIdRef = useRef(null);
 
@@ -1330,6 +1332,22 @@ export default function Page() {
               sx={{ color: 'white', m: 0, '& .MuiTypography-root': { fontSize: '0.7rem' } }}
             />
           </Box>
+          {/* Thumbnail toggle button */}
+          {pdfBuffer && (
+            <IconButton
+              size="small"
+              onClick={() => setShowThumbnails((v) => !v)}
+              sx={{
+                color: showThumbnails ? '#1976d2' : 'inherit',
+                backgroundColor: showThumbnails ? 'rgba(255,255,255,0.25)' : 'transparent',
+                ml: 1,
+                '&:hover': { backgroundColor: 'rgba(255,255,255,0.2)' },
+              }}
+              title={showThumbnails ? 'Hide Thumbnails' : 'Show Thumbnails'}
+            >
+              <ViewSidebar fontSize="small" />
+            </IconButton>
+          )}
         </Toolbar>
       </AppBar>
       <Container maxWidth="lg" sx={{ mt: 2, mb: 2 }}>
@@ -1750,28 +1768,43 @@ export default function Page() {
             </Box>
           )}
 
-          <Box sx={{ width: "100%", height: "60vh", border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden", position: 'relative' }}>
-            {pdfBuffer && <SearchComponent viewerRef={pdfViewerRef} />}
-            <div style={{ height: pdfBuffer ? 'calc(100% - 60px)' : '100%' }}>
-              <PDFViewer
-                ref={pdfViewerRef}
+          <Box sx={{ width: "100%", height: "60vh", border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden", position: 'relative', display: 'flex', flexDirection: 'row' }}>
+            {/* Thumbnail Sidebar */}
+            {showThumbnails && pdfBuffer && (
+              <PdfThumbnailSidebar
                 pdfBuffer={pdfBuffer}
-                onPasswordRequest={handlePasswordRequest}
-                userDetails={{
-                  name: currentUser.author,
-                  email: currentUser.email,
-                  id: currentUser.id
+                totalPages={pdfTotalPages}
+                currentPage={pdfCurrentPage}
+                onPageClick={(pageNum) => {
+                  pdfViewerRef.current?.navigation?.goToPage(pageNum);
                 }}
-                annotationSelectionMenu={annotationSelectionMenu}
-                permissions={(disableAnnotations || disablePrint) ? {
-                  enforceDocumentPermissions: true,
-                  overrides: {
-                    modifyAnnotations: !disableAnnotations,
-                    print: !disablePrint,
-                  }
-                } : undefined}
+                onClose={() => setShowThumbnails(false)}
               />
-            </div>
+            )}
+            {/* Main Viewer area */}
+            <Box sx={{ flexGrow: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {pdfBuffer && <SearchComponent viewerRef={pdfViewerRef} />}
+              <div style={{ flexGrow: 1, height: pdfBuffer ? 'calc(100% - 60px)' : '100%', overflow: 'hidden' }}>
+                <PDFViewer
+                  ref={pdfViewerRef}
+                  pdfBuffer={pdfBuffer}
+                  onPasswordRequest={handlePasswordRequest}
+                  userDetails={{
+                    name: currentUser.author,
+                    email: currentUser.email,
+                    id: currentUser.id
+                  }}
+                  annotationSelectionMenu={annotationSelectionMenu}
+                  permissions={(disableAnnotations || disablePrint) ? {
+                    enforceDocumentPermissions: true,
+                    overrides: {
+                      modifyAnnotations: !disableAnnotations,
+                      print: !disablePrint,
+                    }
+                  } : undefined}
+                />
+              </div>
+            </Box>
           </Box>
         </Box>
       </Container>
