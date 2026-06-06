@@ -1,6 +1,6 @@
 "use client";
 
-import { PDFViewer, PdfThumbnailSidebar } from "../../pdf-viewer/lib";
+import { PDFViewer, PdfThumbnailSidebar, ScrollStrategy } from "../../pdf-viewer/lib";
 import {
   Container,
   Typography,
@@ -113,6 +113,9 @@ export default function Page() {
   const [disablePrint, setDisablePrint] = useState(false);
   // Thumbnail sidebar state
   const [showThumbnails, setShowThumbnails] = useState(false);
+  // Layout mode state
+  const [scrollStrategy, setScrollStrategyState] = useState('vertical'); // 'vertical' | 'horizontal'
+  const [twoPageMode, setTwoPageModeState] = useState(false);
   const pdfViewerRef = useRef(null);
   const lastSelectedIdRef = useRef(null);
 
@@ -1411,6 +1414,56 @@ export default function Page() {
             </Box>
           )}
 
+          {/* Layout Controls */}
+          {pdfBuffer && (
+            <Box sx={{ display: "flex", gap: 1, mb: 1, justifyContent: "center", alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: 'text.secondary', mr: 0.5 }}>Layout:</Typography>
+              {/* Vertical Scroll */}
+              <Button
+                variant={scrollStrategy === 'vertical' && !twoPageMode ? "contained" : "outlined"}
+                size="small"
+                onClick={() => {
+                  setScrollStrategyState('vertical');
+                  setTwoPageModeState(false);
+                  pdfViewerRef.current?.navigation?.setScrollStrategy(ScrollStrategy.Vertical);
+                  pdfViewerRef.current?.navigation?.setTwoPageMode(false);
+                }}
+                title="Single page vertical scroll"
+              >
+                Vertical
+              </Button>
+              {/* Horizontal Scroll */}
+              <Button
+                variant={scrollStrategy === 'horizontal' && !twoPageMode ? "contained" : "outlined"}
+                size="small"
+                color="secondary"
+                onClick={() => {
+                  setScrollStrategyState('horizontal');
+                  setTwoPageModeState(false);
+                  pdfViewerRef.current?.navigation?.setScrollStrategy(ScrollStrategy.Horizontal);
+                  pdfViewerRef.current?.navigation?.setTwoPageMode(false);
+                }}
+                title="Horizontal scroll mode"
+              >
+                Horizontal Scroll
+              </Button>
+              {/* Two-Page View */}
+              <Button
+                variant={twoPageMode ? "contained" : "outlined"}
+                size="small"
+                color="info"
+                onClick={() => {
+                  const next = !twoPageMode;
+                  setTwoPageModeState(next);
+                  pdfViewerRef.current?.navigation?.setTwoPageMode(next);
+                }}
+                title="Two-page spread view"
+              >
+                Two-Page View
+              </Button>
+            </Box>
+          )}
+
           {/* Annotation Controls */}
           {pdfBuffer && (
             <Box sx={{ display: "flex", gap: 1, mb: 1, justifyContent: "center" }}>
@@ -1775,6 +1828,7 @@ export default function Page() {
                 pdfBuffer={pdfBuffer}
                 totalPages={pdfTotalPages}
                 currentPage={pdfCurrentPage}
+                twoPageMode={twoPageMode}
                 onPageClick={(pageNum) => {
                   pdfViewerRef.current?.navigation?.goToPage(pageNum);
                 }}
@@ -1789,6 +1843,9 @@ export default function Page() {
                   ref={pdfViewerRef}
                   pdfBuffer={pdfBuffer}
                   onPasswordRequest={handlePasswordRequest}
+                  scrollStrategy={scrollStrategy === 'horizontal' ? ScrollStrategy.Horizontal : ScrollStrategy.Vertical}
+                  twoPageMode={twoPageMode}
+                  onPageChange={(page) => setPdfCurrentPage(page)}
                   userDetails={{
                     name: currentUser.author,
                     email: currentUser.email,

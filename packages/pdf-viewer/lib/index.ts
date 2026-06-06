@@ -10,6 +10,7 @@ export type { PdfThumbnailSidebarProps } from './PdfThumbnailSidebar';
 
 // Re-export enums from PDFViewer
 export { ZoomMode, Rotation } from './PDFViewer';
+export { ScrollStrategy } from '@embedpdf/plugin-scroll';
 
 // v2.14.1 — annotation lock primitives.
 // Sourced from a local shim because the runtime is on @embedpdf/plugin-annotation@2.2.0,

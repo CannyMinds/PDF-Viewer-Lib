@@ -74,6 +74,82 @@ import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapabi
 // SelectionPluginPackage now imported from react subpath (includes CopyToClipboard utility)
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
 
+// ---------------------------------------------------------------------------
+// TwoPageScroller — renders pages in 2-column spreads using scroll.state
+// virtual items. Works without any plugin patch.
+// ---------------------------------------------------------------------------
+const TwoPageScroller = ({
+  documentId,
+  scroll: scrollPlugin,
+  renderPage,
+}: {
+  documentId: string;
+  scroll: ReturnType<typeof useScroll>;
+  renderPage: (props: any) => React.ReactNode;
+}) => {
+  const docScrollState = (scrollPlugin.state as any)?.documents?.[documentId];
+  const virtualItems: any[] = docScrollState?.virtualItems ?? [];
+
+  // Build a flat list of PageLayout objects from all virtual items
+  const allPages: any[] = [];
+  for (const item of virtualItems) {
+    if (Array.isArray(item.pageLayouts)) {
+      for (const pl of item.pageLayouts) {
+        allPages.push(pl);
+      }
+    }
+  }
+
+  // Group into spreads of 2
+  const spreads: any[][] = [];
+  for (let i = 0; i < allPages.length; i += 2) {
+    const pair = [allPages[i]];
+    if (i + 1 < allPages.length) pair.push(allPages[i + 1]);
+    spreads.push(pair);
+  }
+
+  if (allPages.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        overflowY: 'auto',
+        overflowX: 'auto',
+        backgroundColor: '#eeeeee',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 16,
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
+      {spreads.map((spread, idx) => (
+        <div
+          key={idx}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'flex-start',
+            gap: 4,
+            backgroundColor: '#fff',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          }}
+        >
+          {spread.map((pageLayout: any) => (
+            <div key={pageLayout.pageIndex} style={{ flexShrink: 0 }}>
+              {renderPage(pageLayout)}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+};
+// ---------------------------------------------------------------------------
+
 type AnnotationSelectionMenu = (props: {
   annotation: any;
   selected: boolean;
@@ -1631,7 +1707,15 @@ const PDFContent = forwardRef<PDFViewerRef, {
                       WebkitUserSelect: 'none',
                     }}
                   >
-                    <Scroller documentId={documentId} renderPage={renderPage} />
+                    {twoPageMode ? (
+                      <TwoPageScroller
+                        documentId={documentId}
+                        scroll={scroll}
+                        renderPage={renderPage}
+                      />
+                    ) : (
+                      <Scroller documentId={documentId} renderPage={renderPage} />
+                    )}
                   </Viewport>
                 </div>
               </GlobalPointerProvider>
