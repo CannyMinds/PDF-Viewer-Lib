@@ -5,9 +5,12 @@ import { usePDFViewer } from './usePDFViewer';
 export type { PDFViewerInstance, PDFViewerHookReturn } from './usePDFViewer';
 export type { PDFError, PDFErrorType } from './utils/errorTypes';
 export type { PDFViewerRef, PDFViewerProps, PermissionConfig } from './PDFViewer';
+export { PdfThumbnailSidebar } from './PdfThumbnailSidebar';
+export type { PdfThumbnailSidebarProps } from './PdfThumbnailSidebar';
 
 // Re-export enums from PDFViewer
 export { ZoomMode, Rotation } from './PDFViewer';
+export { ScrollStrategy } from '@embedpdf/plugin-scroll';
 
 // v2.14.1 — annotation lock primitives.
 // Sourced from a local shim because the runtime is on @embedpdf/plugin-annotation@2.2.0,

@@ -8,6 +8,7 @@ import {
   Scroller,
   ScrollPluginPackage,
   ScrollStrategy,
+  useScrollPlugin,
 } from "@embedpdf/plugin-scroll/react";
 import {
   RenderLayer,
@@ -56,6 +57,7 @@ import type { SearchState } from "@embedpdf/plugin-search";
 
 import {
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   forwardRef,
   useMemo,
@@ -73,6 +75,111 @@ import { AnnotationFloatingToolbar } from "./components/AnnotationFloatingToolba
 import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapability } from "@embedpdf/plugin-document-manager/react";
 // SelectionPluginPackage now imported from react subpath (includes CopyToClipboard utility)
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
+
+// ---------------------------------------------------------------------------
+// TwoPageScroller — renders pages in 2-column spreads using scroll.state
+// virtual items. Works without any plugin patch.
+// ---------------------------------------------------------------------------
+const TwoPageScroller = ({
+  documentId,
+  renderPage,
+}: {
+  documentId: string;
+  renderPage: (props: any) => React.ReactNode;
+}) => {
+  const { plugin: scrollPlugin } = useScrollPlugin();
+  const [layoutData, setLayoutData] = useState<any>(null);
+
+  useEffect(() => {
+    if (!scrollPlugin || !documentId) return;
+    const unsubscribe = (scrollPlugin as any).onScrollerData(documentId, (newLayout: any) => {
+      setLayoutData(newLayout);
+    });
+    return () => {
+      unsubscribe();
+      setLayoutData(null);
+      (scrollPlugin as any).clearLayoutReady?.(documentId);
+    };
+  }, [scrollPlugin, documentId]);
+
+  useLayoutEffect(() => {
+    if (!scrollPlugin || !documentId || !layoutData) return;
+    (scrollPlugin as any).setLayoutReady?.(documentId);
+  }, [scrollPlugin, documentId, layoutData]);
+
+  if (!layoutData) return null;
+
+  // Flatten all PageLayout objects from all items
+  const allPages: any[] = [];
+  if (Array.isArray(layoutData.items)) {
+    for (const item of layoutData.items) {
+      if (Array.isArray(item.pageLayouts)) {
+        for (const pl of item.pageLayouts) {
+          allPages.push(pl);
+        }
+      }
+    }
+  }
+
+  // Group into spreads of 2
+  const spreads: any[][] = [];
+  for (let i = 0; i < allPages.length; i += 2) {
+    const pair = [allPages[i]];
+    if (i + 1 < allPages.length) pair.push(allPages[i + 1]);
+    spreads.push(pair);
+  }
+
+  if (allPages.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        overflowY: 'auto',
+        overflowX: 'auto',
+        backgroundColor: '#eeeeee',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 16,
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
+      {spreads.map((spread, idx) => (
+        <div
+          key={idx}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'flex-start',
+            gap: 8,
+            backgroundColor: '#fff',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+            padding: 8,
+            borderRadius: 4,
+          }}
+        >
+          {spread.map((pageLayout: any) => (
+            <div
+              key={pageLayout.pageIndex}
+              style={{
+                width: `${pageLayout.rotatedWidth}px`,
+                height: `${pageLayout.rotatedHeight}px`,
+                position: 'relative',
+                flexShrink: 0,
+              }}
+            >
+              {renderPage(pageLayout)}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+};
+// ---------------------------------------------------------------------------
 
 type AnnotationSelectionMenu = (props: {
   annotation: any;
@@ -168,6 +275,9 @@ export interface PDFViewerProps {
    * Useful when using a custom external loading indicator.
    */
   hideInternalLoading?: boolean;
+  twoPageMode?: boolean | undefined;
+  scrollStrategy?: ScrollStrategy | undefined;
+  onPageChange?: ((page: number) => void) | undefined;
 }
 
 export interface PDFViewerRef {
@@ -188,6 +298,11 @@ export interface PDFViewerRef {
     previousPage: () => void;
     goToFirstPage: () => void;
     goToLastPage: () => void;
+    setScrollStrategy: (strategy: ScrollStrategy) => void;
+    getLayout: () => any;
+    setTwoPageMode: (enabled: boolean) => void;
+    getTwoPageMode: () => boolean;
+    onPageChange: (listener: (event: any) => void) => () => void;
   };
   selection: {
     clearSelection: () => void;
@@ -362,7 +477,35 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
 
 // Internal component that has access to plugin hooks
 // ... (PDFContent definition continues)
-const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boolean; hasPassword: boolean; annotationSelectionMenu?: AnnotationSelectionMenu; pdfBuffer?: Uint8Array | null; engine: any; documentId: string; userDetails?: { name?: string; email?: string; id?: string;[key: string]: any }; onPasswordRequest?: (fileName?: string) => Promise<string | null>; hideInternalLoading?: boolean; }>(({ isReady, isLoading, hasPassword, annotationSelectionMenu, pdfBuffer, engine, documentId, userDetails, onPasswordRequest, hideInternalLoading }, ref) => {
+const PDFContent = forwardRef<PDFViewerRef, {
+  isReady: boolean;
+  isLoading: boolean;
+  hasPassword: boolean;
+  annotationSelectionMenu?: AnnotationSelectionMenu;
+  pdfBuffer?: Uint8Array | null;
+  engine: any;
+  documentId: string;
+  userDetails?: { name?: string; email?: string; id?: string;[key: string]: any };
+  onPasswordRequest?: (fileName?: string) => Promise<string | null>;
+  hideInternalLoading?: boolean;
+  twoPageMode?: boolean | undefined;
+  scrollStrategy?: ScrollStrategy | undefined;
+  onPageChange?: ((page: number) => void) | undefined;
+}>(({
+  isReady,
+  isLoading,
+  hasPassword,
+  annotationSelectionMenu,
+  pdfBuffer,
+  engine,
+  documentId,
+  userDetails,
+  onPasswordRequest,
+  hideInternalLoading,
+  twoPageMode,
+  scrollStrategy,
+  onPageChange
+}, ref) => {
   // v2.x hooks now require documentId for multi-document support
   const zoom = useZoom(documentId);
   const search = useSearch(documentId);
@@ -389,6 +532,31 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
   useEffect(() => {
     verifiedTotalPagesRef.current = verifiedTotalPages;
   }, [verifiedTotalPages]);
+
+  // Apply two-page mode and scroll strategy from props inside the document context
+  useEffect(() => {
+    if (!scroll.provides) return;
+    if (twoPageMode !== undefined) {
+      // setTwoPageMode is added by the pnpm patch in DMS-Client-Drive; cast to any for type safety
+      (scroll.provides as any).setTwoPageMode?.(twoPageMode);
+    }
+    if (scrollStrategy !== undefined) {
+      scroll.provides.setScrollStrategy(scrollStrategy);
+    }
+  }, [twoPageMode, scrollStrategy, scroll.provides]);
+
+  // Subscribe to page changes from scrolling inside the document context
+  useEffect(() => {
+    if (!scroll.provides || !onPageChange) return;
+    const unsubscribe = scroll.provides.onPageChange((event) => {
+      if (event?.pageNumber) {
+        onPageChange(event.pageNumber);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [scroll.provides, onPageChange]);
 
   // Track pending stamp image for placement
   // Track click-to-place callback
@@ -783,6 +951,36 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
         if (scroll.provides && totalPages > 1) {
           scroll.provides.scrollToPage({ pageNumber: totalPages });
         }
+      },
+      setScrollStrategy: (strategy: ScrollStrategy) => {
+        if (scroll.provides) {
+          scroll.provides.setScrollStrategy(strategy);
+        }
+      },
+      getLayout: () => {
+        if (scroll.provides) {
+          return scroll.provides.getLayout();
+        }
+        return null;
+      },
+      setTwoPageMode: (enabled: boolean) => {
+        if (scroll.provides) {
+          // setTwoPageMode is added by the pnpm patch; cast to any
+          (scroll.provides as any).setTwoPageMode?.(enabled);
+        }
+      },
+      getTwoPageMode: () => {
+        if (scroll.provides) {
+          // getTwoPageMode is added by the pnpm patch; cast to any
+          return (scroll.provides as any).getTwoPageMode?.() ?? false;
+        }
+        return false;
+      },
+      onPageChange: (listener: (event: any) => void) => {
+        if (scroll.provides) {
+          return scroll.provides.onPageChange(listener);
+        }
+        return () => {};
       },
     },
     selection: {
@@ -1540,7 +1738,14 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
                       WebkitUserSelect: 'none',
                     }}
                   >
-                    <Scroller documentId={documentId} renderPage={renderPage} />
+                    {twoPageMode ? (
+                      <TwoPageScroller
+                        documentId={documentId}
+                        renderPage={renderPage}
+                      />
+                    ) : (
+                      <Scroller documentId={documentId} renderPage={renderPage} />
+                    )}
                   </Viewport>
                 </div>
               </GlobalPointerProvider>
@@ -1568,7 +1773,7 @@ const PDFContent = forwardRef<PDFViewerRef, { isReady: boolean; isLoading: boole
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
   ref
 ): ReactElement | null {
   const {
@@ -1768,6 +1973,9 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
               {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
               {...(onPasswordRequest ? { onPasswordRequest } : {})}
               hideInternalLoading={!!hideInternalLoading}
+              twoPageMode={twoPageMode}
+              scrollStrategy={scrollStrategy}
+              onPageChange={onPageChange}
             />
           </>
         ) : hideInternalLoading ? null : (
