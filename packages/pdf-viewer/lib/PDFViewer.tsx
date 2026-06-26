@@ -1,4 +1,4 @@
-import { EmbedPDF, useDocumentState } from "@embedpdf/core/react";
+import { EmbedPDF, useDocumentState, usePlugin } from "@embedpdf/core/react";
 // FilePicker moved to plugin-document-manager in v2.x
 import {
   Viewport,
@@ -70,115 +70,187 @@ import {
 
 
 import { usePdfiumEngine } from "@embedpdf/engines/react";
-import { createPluginRegistration } from "@embedpdf/core";
+import { createPluginRegistration, BasePlugin } from "@embedpdf/core";
 import { AnnotationFloatingToolbar } from "./components/AnnotationFloatingToolbar";
 import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapability } from "@embedpdf/plugin-document-manager/react";
 // SelectionPluginPackage now imported from react subpath (includes CopyToClipboard utility)
 import { SearchPluginPackage } from "@embedpdf/plugin-search";
 
 // ---------------------------------------------------------------------------
-// TwoPageScroller — renders pages in 2-column spreads using scroll.state
-// virtual items. Works without any plugin patch.
+// Patch @embedpdf/plugin-scroll package's HorizontalScrollStrategy prototype to fix layout & navigation bugs in horizontal scrolling mode.
 // ---------------------------------------------------------------------------
-const TwoPageScroller = ({
-  documentId,
-  renderPage,
-}: {
-  documentId: string;
-  renderPage: (props: any) => React.ReactNode;
-}) => {
-  const { plugin: scrollPlugin } = useScrollPlugin();
-  const [layoutData, setLayoutData] = useState<any>(null);
+if (ScrollPluginPackage && typeof ScrollPluginPackage.create === 'function') {
+  const originalScrollPluginCreate = ScrollPluginPackage.create;
+  ScrollPluginPackage.create = function(registry: any, config: any) {
+    const pluginInstance = originalScrollPluginCreate.call(this, registry, config);
+    
+    if (pluginInstance && typeof (pluginInstance as any).createStrategy === 'function') {
+      const originalCreateStrategy = (pluginInstance as any).createStrategy;
+      (pluginInstance as any).createStrategy = function(strategyType: any) {
+        const strategy = originalCreateStrategy.call(this, strategyType);
+        if (strategy) {
+          const proto = Object.getPrototypeOf(strategy);
+          if (proto && !proto.__isPatched) {
+            proto.__isPatched = true;
+            
+            // 1. Patch getRectLocationForPage: Fix horizontal centering offset bug
+            const originalGetRectLocation = proto.getRectLocationForPage;
+            proto.getRectLocationForPage = function(pageNumber: number, virtualItems: any[], totalContentSize: any) {
+              const isHorizontal = this.constructor.name === 'HorizontalScrollStrategy';
+              if (isHorizontal) {
+                const item = virtualItems.find((item2) => item2.pageNumbers.includes(pageNumber));
+                if (!item) return null;
+                const pageLayout = item.pageLayouts.find((layout: any) => layout.pageNumber === pageNumber);
+                if (!pageLayout) return null;
+                
+                let centeringOffsetY = 0;
+                if (totalContentSize) {
+                  const maxHeight = totalContentSize.height;
+                  if (item.height < maxHeight) {
+                    centeringOffsetY = (maxHeight - item.height) / 2;
+                  }
+                }
+                return {
+                  origin: {
+                    x: item.x + pageLayout.x,
+                    y: item.y + pageLayout.y + centeringOffsetY
+                  },
+                  size: {
+                    width: pageLayout.width,
+                    height: pageLayout.height
+                  }
+                };
+              }
+              return originalGetRectLocation.call(this, pageNumber, virtualItems, totalContentSize);
+            };
 
-  useEffect(() => {
-    if (!scrollPlugin || !documentId) return;
-    const unsubscribe = (scrollPlugin as any).onScrollerData(documentId, (newLayout: any) => {
-      setLayoutData(newLayout);
-    });
-    return () => {
-      unsubscribe();
-      setLayoutData(null);
-      (scrollPlugin as any).clearLayoutReady?.(documentId);
-    };
-  }, [scrollPlugin, documentId]);
-
-  useLayoutEffect(() => {
-    if (!scrollPlugin || !documentId || !layoutData) return;
-    (scrollPlugin as any).setLayoutReady?.(documentId);
-  }, [scrollPlugin, documentId, layoutData]);
-
-  if (!layoutData) return null;
-
-  // Flatten all PageLayout objects from all items
-  const allPages: any[] = [];
-  if (Array.isArray(layoutData.items)) {
-    for (const item of layoutData.items) {
-      if (Array.isArray(item.pageLayouts)) {
-        for (const pl of item.pageLayouts) {
-          allPages.push(pl);
+            // 2. Patch getVisibleRange: Fix horizontal range calculation using height instead of width
+            const originalGetVisibleRange = proto.getVisibleRange;
+            proto.getVisibleRange = function(viewport: any, virtualItems: any[], scale: number) {
+              const isHorizontal = this.constructor.name === 'HorizontalScrollStrategy';
+              if (isHorizontal) {
+                const scrollOffset = this.getScrollOffset(viewport);
+                const clientSize = this.getClientSize(viewport);
+                const viewportStart = scrollOffset;
+                const viewportEnd = scrollOffset + clientSize;
+                
+                let startIndex = 0;
+                while (startIndex < virtualItems.length) {
+                  const item = virtualItems[startIndex];
+                  if ((item.offset + item.width) * scale > viewportStart) {
+                    break;
+                  }
+                  startIndex++;
+                }
+                
+                let endIndex = startIndex;
+                while (endIndex < virtualItems.length) {
+                  const item = virtualItems[endIndex];
+                  if (item.offset * scale > viewportEnd) {
+                    break;
+                  }
+                  endIndex++;
+                }
+                
+                return {
+                  start: Math.max(0, startIndex - this.bufferSize),
+                  end: Math.min(virtualItems.length - 1, endIndex + this.bufferSize - 1)
+                };
+              }
+              return originalGetVisibleRange.call(this, viewport, virtualItems, scale);
+            };
+          }
         }
-      }
+        return strategy;
+      };
+    }
+    
+    return pluginInstance;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SpreadPlugin — custom plugin to natively support page pairing (spreads)
+// in @embedpdf's scroll plugin.
+// ---------------------------------------------------------------------------
+class SpreadPlugin extends BasePlugin {
+  static id = "spread";
+  private twoPageMode = false;
+  private listeners: Set<(event: { documentId: string }) => void> = new Set();
+
+  constructor(id: string, registry: any) {
+    super(id, registry);
+  }
+
+  async initialize(): Promise<void> {
+    // No-op custom initialization
+  }
+
+  setTwoPageMode(enabled: boolean, documentId: string) {
+    if (this.twoPageMode !== enabled) {
+      this.twoPageMode = enabled;
+      this.listeners.forEach((listener) => {
+        try {
+          listener({ documentId });
+        } catch (e) {
+          console.error('[SpreadPlugin] Error invoking spread listener:', e);
+        }
+      });
     }
   }
 
-  // Group into spreads of 2
-  const spreads: any[][] = [];
-  for (let i = 0; i < allPages.length; i += 2) {
-    const pair = [allPages[i]];
-    if (i + 1 < allPages.length) pair.push(allPages[i + 1]);
-    spreads.push(pair);
+  getTwoPageMode() {
+    return this.twoPageMode;
   }
 
-  if (allPages.length === 0) return null;
+  buildCapability() {
+    return {
+      forDocument: (documentId: string) => ({
+        getSpreadPages: () => {
+          const coreDoc = (this as any).coreState?.core?.documents?.[documentId];
+          const pages = coreDoc?.document?.pages || [];
+          if (!pages.length) return [];
+          
+          if (!this.twoPageMode) {
+            return pages.map((page: any) => [page]);
+          }
+          
+          // Group into pairs
+          const spreads: any[][] = [];
+          for (let i = 0; i < pages.length; i += 2) {
+            const pair = [pages[i]];
+            if (i + 1 < pages.length) pair.push(pages[i + 1]);
+            spreads.push(pair);
+          }
+          return spreads;
+        }
+      }),
+      onSpreadChange: (callback: (event: { documentId: string }) => void) => {
+        this.listeners.add(callback);
+        return () => {
+          this.listeners.delete(callback);
+        };
+      }
+    };
+  }
+}
 
-  return (
-    <div
-      style={{
-        width: '100%',
-        height: '100%',
-        overflowY: 'auto',
-        overflowX: 'auto',
-        backgroundColor: '#eeeeee',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 16,
-        padding: '24px 16px',
-        boxSizing: 'border-box',
-      }}
-    >
-      {spreads.map((spread, idx) => (
-        <div
-          key={idx}
-          style={{
-            display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'flex-start',
-            gap: 8,
-            backgroundColor: '#fff',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-            padding: 8,
-            borderRadius: 4,
-          }}
-        >
-          {spread.map((pageLayout: any) => (
-            <div
-              key={pageLayout.pageIndex}
-              style={{
-                width: `${pageLayout.rotatedWidth}px`,
-                height: `${pageLayout.rotatedHeight}px`,
-                position: 'relative',
-                flexShrink: 0,
-              }}
-            >
-              {renderPage(pageLayout)}
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
+const SpreadPluginPackage = {
+  manifest: {
+    id: "spread",
+    name: "Spread Plugin",
+    version: "1.0.0",
+    provides: ["spread"],
+    requires: [],
+    optional: [],
+    defaultConfig: {},
+  },
+  create: (registry: any) => new SpreadPlugin("spread", registry),
+  reducer: (state: any = null, action: any) => state,
+  initialState: (coreState: any) => null,
 };
+
+const useSpreadPlugin = () => usePlugin("spread");
 // ---------------------------------------------------------------------------
 
 type AnnotationSelectionMenu = (props: {
@@ -516,6 +588,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
   const documentManager = useDocumentManagerCapability(); // documentManager capability used in PasswordLogic
   const selection = useSelectionCapability();
   const docState = useDocumentState(documentId);
+  const { plugin: spreadPlugin } = useSpreadPlugin() as any;
 
   // Track annotations with metadata
   const [annotationsMetadata, setAnnotationsMetadata] = useState<Map<string, any>>(new Map());
@@ -535,15 +608,16 @@ const PDFContent = forwardRef<PDFViewerRef, {
 
   // Apply two-page mode and scroll strategy from props inside the document context
   useEffect(() => {
-    if (!scroll.provides) return;
-    if (twoPageMode !== undefined) {
-      // setTwoPageMode is added by the pnpm patch in DMS-Client-Drive; cast to any for type safety
-      (scroll.provides as any).setTwoPageMode?.(twoPageMode);
+    if (spreadPlugin && twoPageMode !== undefined) {
+      spreadPlugin.setTwoPageMode(twoPageMode, documentId);
     }
-    if (scrollStrategy !== undefined) {
+  }, [spreadPlugin, twoPageMode, documentId]);
+
+  useEffect(() => {
+    if (scroll.provides && scrollStrategy !== undefined) {
       scroll.provides.setScrollStrategy(scrollStrategy);
     }
-  }, [twoPageMode, scrollStrategy, scroll.provides]);
+  }, [scrollStrategy, scroll.provides]);
 
   // Subscribe to page changes from scrolling inside the document context
   useEffect(() => {
@@ -867,6 +941,12 @@ const PDFContent = forwardRef<PDFViewerRef, {
     };
   }, [annotation.provides, userDetails]);
 
+  const performScrollToPage = useCallback((page: number) => {
+    if (scroll.provides) {
+      scroll.provides.scrollToPage({ pageNumber: page });
+    }
+  }, [scroll.provides]);
+
   useImperativeHandle(ref, () => ({
     zoom: {
       zoomIn: () => {
@@ -903,9 +983,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
     },
     navigation: {
       goToPage: (page: number) => {
-        if (scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: page });
-        }
+        performScrollToPage(page);
       },
       getCurrentPage: () => {
         if (scroll.state) {
@@ -931,25 +1009,23 @@ const PDFContent = forwardRef<PDFViewerRef, {
       nextPage: () => {
         const currentPage = scroll.state?.currentPage || 1;
         const totalPages = verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages || 0);
-        if (totalPages > 1 && currentPage < totalPages && scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: currentPage + 1 });
+        if (totalPages > 1 && currentPage < totalPages) {
+          performScrollToPage(currentPage + 1);
         }
       },
       previousPage: () => {
         const currentPage = scroll.state?.currentPage || 1;
-        if (currentPage > 1 && scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: currentPage - 1 });
+        if (currentPage > 1) {
+          performScrollToPage(currentPage - 1);
         }
       },
       goToFirstPage: () => {
-        if (scroll.provides) {
-          scroll.provides.scrollToPage({ pageNumber: 1 });
-        }
+        performScrollToPage(1);
       },
       goToLastPage: () => {
         const totalPages = verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages || 0);
-        if (scroll.provides && totalPages > 1) {
-          scroll.provides.scrollToPage({ pageNumber: totalPages });
+        if (totalPages > 1) {
+          performScrollToPage(totalPages);
         }
       },
       setScrollStrategy: (strategy: ScrollStrategy) => {
@@ -964,17 +1040,12 @@ const PDFContent = forwardRef<PDFViewerRef, {
         return null;
       },
       setTwoPageMode: (enabled: boolean) => {
-        if (scroll.provides) {
-          // setTwoPageMode is added by the pnpm patch; cast to any
-          (scroll.provides as any).setTwoPageMode?.(enabled);
+        if (spreadPlugin) {
+          spreadPlugin.setTwoPageMode(enabled, documentId);
         }
       },
       getTwoPageMode: () => {
-        if (scroll.provides) {
-          // getTwoPageMode is added by the pnpm patch; cast to any
-          return (scroll.provides as any).getTwoPageMode?.() ?? false;
-        }
-        return false;
+        return spreadPlugin?.getTwoPageMode() ?? false;
       },
       onPageChange: (listener: (event: any) => void) => {
         if (scroll.provides) {
@@ -1065,9 +1136,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
     },
     scroll: {
       scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => {
-        if (scroll.provides) {
-          scroll.provides.scrollToPage(options);
-        }
+        performScrollToPage(options.pageNumber);
       },
     },
     rotate: {
@@ -1641,14 +1710,12 @@ const PDFContent = forwardRef<PDFViewerRef, {
       <div
         style={{
           position: "relative",
-          backgroundColor: "transparent",
+          backgroundColor: "#fff",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          borderRadius: 4,
           cursor: clickToPlaceCallbackRef.current ? 'crosshair' : 'default',
           userSelect: 'none',
           WebkitUserSelect: 'none',
-          // Reverting to simple block layout to debug scroll issues
-          // display: 'flex',
-          // justifyContent: 'center',
-          // width: '100%',
         }}
         draggable={false}
         onClick={handlePageClick}
@@ -1738,14 +1805,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
                       WebkitUserSelect: 'none',
                     }}
                   >
-                    {twoPageMode ? (
-                      <TwoPageScroller
-                        documentId={documentId}
-                        renderPage={renderPage}
-                      />
-                    ) : (
-                      <Scroller documentId={documentId} renderPage={renderPage} />
-                    )}
+                    <Scroller documentId={documentId} renderPage={renderPage} />
                   </Viewport>
                 </div>
               </GlobalPointerProvider>
@@ -1882,6 +1942,7 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
           minZoom: 0.2,
           maxZoom: 5.0,
         }),
+        createPluginRegistration(SpreadPluginPackage),
         createPluginRegistration(ScrollPluginPackage),
         createPluginRegistration(InteractionManagerPluginPackage),
         createPluginRegistration(RotatePluginPackage),

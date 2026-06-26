@@ -42,6 +42,8 @@ export interface PdfThumbnailSidebarProps {
   onClose: () => void;
   /** Accent colour used for the active-page highlight. Defaults to #2563eb */
   accentColor?: string;
+  /** Maximum width the panel can be expanded to. Defaults to 450 in two-page mode and 320 in single-page mode. */
+  maxWidth?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,16 +77,18 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
   onPageClick,
   onClose,
   accentColor = "#2563eb",
+  maxWidth,
 }) => {
-  const [width, setWidth] = useState(twoPageMode ? 380 : 280);
+  const resolvedMaxWidth = maxWidth ?? (twoPageMode ? 450 : 320);
+  const [width, setWidth] = useState(() => Math.min(twoPageMode ? 360 : 220, resolvedMaxWidth));
   const [isResizing, setIsResizing] = useState(false);
   const widthRef = useRef(width);
   widthRef.current = width;
 
-  // Adjust sidebar width when two-page mode changes
+  // Adjust sidebar width limits
   useEffect(() => {
-    setWidth((prev) => (twoPageMode ? Math.max(prev, 380) : Math.min(prev, 280)));
-  }, [twoPageMode]);
+    setWidth((prev) => Math.min(prev, resolvedMaxWidth));
+  }, [resolvedMaxWidth]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -93,7 +97,7 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
     const startWidth = widthRef.current;
 
     const onMove = (mv: MouseEvent) => {
-      const newWidth = Math.max(180, Math.min(600, startWidth + mv.clientX - startX));
+      const newWidth = Math.max(180, Math.min(resolvedMaxWidth, startWidth + mv.clientX - startX));
       setWidth(newWidth);
     };
     const onUp = () => {
