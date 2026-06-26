@@ -119,6 +119,10 @@ export default function Page() {
   const pdfViewerRef = useRef(null);
   const lastSelectedIdRef = useRef(null);
 
+  useEffect(() => {
+    window.pdfViewer = pdfViewerRef.current;
+  }, [pdfViewerRef.current]);
+
   // Debug: Log signature active state changes
   useEffect(() => {
     console.log('🔄 isSignatureActive changed to:', isSignatureActive);
