@@ -172,11 +172,11 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
   };
 
   return (
-    <div style={containerStyle}>
+    <div style={containerStyle} className="pdf-viewer-thumbnail-sidebar">
       <div style={panelStyle}>
         {/* ── Header ── */}
         <div style={headerStyle}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151" }} className="pdf-viewer-thumbnail-title">
             Pages
           </span>
           <button
@@ -184,6 +184,7 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
             onClick={onClose}
             title="Close thumbnail panel"
             aria-label="Close thumbnail panel"
+            className="pdf-viewer-thumbnail-close-btn"
           >
             <ChevronLeftIcon />
           </button>
@@ -484,8 +485,9 @@ const ThumbnailPage: React.FC<ThumbnailPageProps> = ({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onPageClick(pageNum);
       }}
+      className={`pdf-viewer-thumbnail-page ${isActive ? "active" : ""}`}
     >
-      <div style={canvasWrapperStyle}>
+      <div style={canvasWrapperStyle} className="pdf-viewer-thumbnail-canvas-wrapper">
         <RenderLayer
           documentId={documentId}
           pageIndex={index}
@@ -493,7 +495,7 @@ const ThumbnailPage: React.FC<ThumbnailPageProps> = ({
           style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
         />
       </div>
-      <span style={labelStyle}>{pageNum}</span>
+      <span style={labelStyle} className="pdf-viewer-thumbnail-label">{pageNum}</span>
     </div>
   );
 };
