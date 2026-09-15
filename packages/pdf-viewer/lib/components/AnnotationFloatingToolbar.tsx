@@ -111,6 +111,16 @@ export const AnnotationFloatingToolbar: React.FC<Props> = ({ annotationPlugin, d
             } else if (provides.deleteAnnotation) {
                 provides.deleteAnnotation(pageIndex, selection.id);
             }
+            // Delete only stages the removal (via the history plugin) until
+            // something calls commit() — without this, the annotation stays
+            // physically present in the document even though it disappears
+            // from this toolbar/the UI, so anything reading the real
+            // document afterward (e.g. a "with annotations" print/export)
+            // still sees it. Same fix as PDFViewer.tsx's own
+            // deleteSelectedAnnotation.
+            if (provides.commit) {
+                provides.commit(documentId);
+            }
             setSelection(null);
         }
     };

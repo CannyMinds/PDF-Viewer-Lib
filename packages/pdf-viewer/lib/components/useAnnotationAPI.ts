@@ -139,9 +139,19 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
     },
     deleteSelectedAnnotation: () => {
       if (!annotation.provides) return false;
-      const selection = annotation.provides.getSelectedAnnotation();
+      const api = annotation.provides as any;
+      const selection = api.getSelectedAnnotation();
       if (!selection) return false;
-      annotation.provides.deleteAnnotation(selection.object.pageIndex, selection.object.id);
+      api.deleteAnnotation(selection.object.pageIndex, selection.object.id);
+      // Delete only stages the removal (via the history plugin) until
+      // something calls commit() — same gap as PDFViewer.tsx's own
+      // deleteSelectedAnnotation, see the comment there. Without this, the
+      // annotation stays physically present in the document (invisible in
+      // the UI, but still readable by anything that reads the real
+      // document — e.g. a "with annotations" print/export moments later).
+      if (api.commit) {
+        api.commit();
+      }
       return true;
     },
     getSelectedAnnotation: () => {
@@ -296,15 +306,15 @@ export function createAnnotationAPI(params: AnnotationAPIParams) {
           // Enhanced context with multiple potential keys for image data
           const enhancedCtx = ctx ? {
             ...ctx,
-            image: ctx.imageData || ctx.image, // Try 'image' key as well
+            image: ctx.imageData || (ctx as Record<string, unknown>).image, // Try 'image' key as well
             data: ctx.imageData, // Try 'data' key
           } : undefined;
 
           // Pass context if it exists
           api.createAnnotation(pageIndex, formattedAnnotation, enhancedCtx);
-          
+
           // Commit immediately for each stamp to ensure appearance generation
-          if (formattedAnnotation.type === PdfAnnotationSubtype.STAMP && api.commit) {
+          if (annotationData.type === PdfAnnotationSubtype.STAMP && api.commit) {
              api.commit();
              // Small delay to allow engine to process
              await new Promise(resolve => setTimeout(resolve, 50));
