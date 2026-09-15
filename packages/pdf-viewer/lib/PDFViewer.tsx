@@ -268,13 +268,6 @@ import {
   loadImageDimensions,
   useStampTool,
   createAnnotationAPI,
-  createZoomAPI,
-  createNavigationAPI,
-  createSearchAPI,
-  createRotateAPI,
-  createDownloadAPI,
-  createStatusAPI,
-  createScrollAPI,
 } from "./components";
 
 /**
@@ -547,6 +540,46 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
   return null;
 };
 
+/**
+ * PDF's `/F` annotation flags bitfield includes a spec-defined "Print" bit
+ * (value 4): "If set, print the annotation when the page is printed... If
+ * clear, never print the annotation, regardless of whether it is displayed
+ * on the screen" (PDF spec, Table 165). This is the actual root cause behind
+ * a highlight (or any annotation) rendering correctly on screen and surviving
+ * `downloadWithAnnotations` (which just serializes the annotation as-is —
+ * nothing there inspects the Print bit) while silently vanishing from every
+ * real print operation, `printWithAnnotations` included: any spec-compliant
+ * print pipeline — including @embedpdf/plugin-print's own `preparePrintDocument`
+ * (PDFium's `FPDF_ImportPages`, which does carry annotations and their flags
+ * across correctly — that was never the actual problem) — correctly omits an
+ * annotation whose Print bit is clear.
+ *
+ * `@embedpdf/engines`' native content-writer only defaults *new* STAMP
+ * annotations to `annotation.flags || ['print', 'noZoom', 'noRotate']`
+ * (its `addStampContent`) — there is no equivalent fallback for the
+ * text-markup family (Highlight/Underline/StrikeOut/Squiggly, via
+ * `addTextMarkupContent`), and that fallback only triggers when `flags` is
+ * missing entirely, not when it's an empty array (`[]` is truthy in JS, so
+ * `annotation.flags && setAnnotationFlags(...)` still fires and writes zero
+ * bits — Print included). Once any caller (a consuming app's own flag
+ * management, e.g. computing engine-enforced read-only/locked flags from
+ * permissions, is a completely reasonable thing to do) writes a `flags`
+ * array via `updateAnnotation` without separately re-adding 'print', the
+ * Print bit silently stays or becomes cleared with no path back.
+ *
+ * Since `updateAnnotation` (below) is the single choke point every
+ * flags-bearing patch — from any consumer, for any reason — passes through,
+ * this guarantees 'print' survives by default unless the annotation is
+ * being made invisible anyway ('hidden' / 'noView'), in which case whether
+ * it would print is moot.
+ */
+const ensurePrintableFlags = (flags: unknown): unknown => {
+  if (!Array.isArray(flags)) return flags;
+  if (flags.includes('hidden') || flags.includes('noView')) return flags;
+  if (flags.includes('print')) return flags;
+  return [...flags, 'print'];
+};
+
 // Internal component that has access to plugin hooks
 // ... (PDFContent definition continues)
 const PDFContent = forwardRef<PDFViewerRef, {
@@ -657,6 +690,37 @@ const PDFContent = forwardRef<PDFViewerRef, {
       };
     }
   }, [userDetails]);
+
+  // Guarantee every newly-created annotation is printable by default (see
+  // ensurePrintableFlags' doc comment above the component). Catches the case
+  // before any app-level flags-management call (e.g. a consumer computing
+  // engine-enforced read-only/locked flags from its own permission model, or
+  // this component's own note-placement locking just below) ever runs — so
+  // even an unsaved draft downloads/prints correctly, not just saved ones.
+  useEffect(() => {
+    if (!annotation.provides?.onAnnotationEvent) return undefined;
+
+    const unsubscribe = annotation.provides.onAnnotationEvent((event: any) => {
+      if (event?.type !== 'create' || event?.committed === false) return;
+      const ann = event.annotation;
+      if (!ann?.id) return;
+
+      const currentFlags = Array.isArray(ann.flags) ? ann.flags : [];
+      const patched = ensurePrintableFlags(currentFlags) as string[];
+      if (patched === currentFlags) return; // already printable, or deliberately hidden
+
+      const api = annotation.provides as any;
+      if (typeof api?.updateAnnotation !== 'function') return;
+      api.updateAnnotation(ann.pageIndex, ann.id, { flags: patched });
+      if (typeof api.commit === 'function') {
+        api.commit();
+      }
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [annotation.provides]);
 
   // Handle Ctrl+C for copying selected text
   useEffect(() => {
@@ -1281,9 +1345,23 @@ const PDFContent = forwardRef<PDFViewerRef, {
       },
       deleteSelectedAnnotation: () => {
         if (!annotation.provides) return false;
-        const selection = annotation.provides.getSelectedAnnotation();
+        const api = annotation.provides as any;
+        const selection = api.getSelectedAnnotation();
         if (!selection) return false;
-        annotation.provides.deleteAnnotation(selection.object.pageIndex, selection.object.id);
+        api.deleteAnnotation(selection.object.pageIndex, selection.object.id);
+        // Every other mutating call here (updateAnnotation, stamp placement,
+        // print/download bytes) explicitly commits afterward — this one
+        // didn't. @embedpdf/plugin-annotation's delete, like create/update,
+        // only stages the removal (dispatches JS state, marks the entry
+        // "deleted" internally) when the history plugin is active; nothing
+        // writes it into the actual PDFium document until something calls
+        // commit(). Left uncommitted, the annotation stays physically
+        // present in the live document — invisible in the UI (JS state says
+        // deleted) but still there for anything that reads the real
+        // document afterward (e.g. a "with annotations" print/export).
+        if (api.commit) {
+          api.commit();
+        }
         return true;
       },
       getSelectedAnnotation: () => {
@@ -1336,8 +1414,16 @@ const PDFContent = forwardRef<PDFViewerRef, {
         try {
           const api = annotation.provides as any;
 
+          // See ensurePrintableFlags' doc comment above: whenever this patch
+          // touches flags at all, make sure it doesn't silently clear the
+          // PDF's Print bit along with it.
+          const finalUpdates =
+            updates && 'flags' in updates
+              ? { ...updates, flags: ensurePrintableFlags(updates.flags) }
+              : updates;
+
           if (api.updateAnnotation) {
-            api.updateAnnotation(pageIndex, annotationId, updates);
+            api.updateAnnotation(pageIndex, annotationId, finalUpdates);
 
             if (api.commit) {
               api.commit();

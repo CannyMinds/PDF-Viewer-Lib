@@ -25,7 +25,7 @@ export function useStampTool(params: UseStampToolParams) {
       
       // Convert SVG to PNG for better PDF compatibility
       if (isSvg && imageDataUrl.startsWith('data:image/svg+xml')) {
-        finalImageDataUrl = await svgToPngDataUrl(decodeURIComponent(imageDataUrl.split(',')[1]), 200, 100);
+        finalImageDataUrl = await svgToPngDataUrl(decodeURIComponent(imageDataUrl.split(',')[1] ?? ''), 200, 100);
       }
       
       const { width, height } = cached ?? (await loadImageDimensions(finalImageDataUrl));
