@@ -71,8 +71,16 @@ export function useStampTool(params: UseStampToolParams) {
         annotation.provides.addTool({
           id: toolId,
           name: "Custom Stamp",
-          interaction: { exclusive: false, cursor: "crosshair" },
-          matchScore: () => 1,
+          interaction: {
+            exclusive: false,
+            cursor: "crosshair",
+            isRotatable: false,
+            lockAspectRatio: true,
+            lockGroupAspectRatio: true,
+          },
+          // See PDFViewer.tsx's addTool call for why this must be strictly
+          // higher than the built-in "stamp" tool's score.
+          matchScore: () => 2,
           defaults,
         });
         customStampToolIdRef.current = toolId;
