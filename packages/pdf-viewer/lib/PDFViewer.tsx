@@ -2106,6 +2106,10 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
         createPluginRegistration(HistoryPluginPackage),
         createPluginRegistration(AnnotationPluginPackage, {
           annotationAuthor: "User",
+          // Stamps loaded from a saved PDF match the library's built-in "stamp"
+          // tool, not our lazily-registered "customStamp" tool, so its
+          // isRotatable: false never applied to them. Patch the built-in tool too.
+          tools: [{ id: "stamp", interaction: { exclusive: false, isRotatable: false } }],
         }),
         createPluginRegistration(PrintPluginPackage),
       ];
