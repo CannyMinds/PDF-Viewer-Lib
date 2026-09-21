@@ -433,6 +433,18 @@ export interface PDFViewerRef {
     addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: { author?: string; customData?: any }) => boolean;
     addSignatureAnnotation: (signatureDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number) => boolean;
     deleteSelectedAnnotation: () => boolean;
+    /** Deletes a specific annotation by id, regardless of current selection —
+     * unlike deleteSelectedAnnotation, works uniformly across every
+     * annotation type (stamp, highlight, ink/signature, note) without
+     * relying on selection/interactivity state. */
+    deleteAnnotationById: (pageIndex: number, annotationId: string) => boolean;
+    /** Deletes multiple annotations in one commit — deleteAnnotationById calls
+     * commit() per item, and since commit() is async and lock-guarded
+     * underneath, back-to-back calls can find the lock already held by an
+     * earlier in-flight commit and silently no-op instead of actually
+     * waiting, dropping later deletes. This stages every deletion first and
+     * commits exactly once. */
+    deleteAnnotationsById: (items: Array<{ pageIndex: number; annotationId: string }>) => Promise<boolean>;
     getSelectedAnnotation: () => PdfAnnotationObject | null;
     getSelectedAnnotationDetails: () => any;
     getAllAnnotations: () => PdfAnnotationObject[];
@@ -873,8 +885,25 @@ const PDFContent = forwardRef<PDFViewerRef, {
         annotation.provides.addTool({
           id: toolId,
           name: "Custom Stamp",
-          interaction: { exclusive: false, cursor: "crosshair" },
-          matchScore: () => 1,
+          interaction: {
+            exclusive: false,
+            cursor: "crosshair",
+            isRotatable: false,
+            // The stamp image is a fixed-aspect-ratio bitmap (generated once at
+            // placement) — without this, dragging a single resize handle can
+            // stretch the box into different proportions than the image, which
+            // the renderer either distorts or crops the text out of. Matching
+            // the library's own built-in "stamp" tool here.
+            lockAspectRatio: true,
+            lockGroupAspectRatio: true,
+          },
+          // findToolForAnnotation() picks the tool with the highest matchScore,
+          // using strict `>` — on a tie it keeps whichever tool was registered
+          // first. The library's built-in "stamp" tool (registered before ours)
+          // also scores every STAMP annotation as 1, so it was always winning
+          // the tie and our own interaction/behavior config was never applied.
+          // Score strictly higher so our tool deterministically wins.
+          matchScore: () => 2,
           defaults,
         });
         customStampToolIdRef.current = toolId;
@@ -1359,6 +1388,46 @@ const PDFContent = forwardRef<PDFViewerRef, {
         // present in the live document — invisible in the UI (JS state says
         // deleted) but still there for anything that reads the real
         // document afterward (e.g. a "with annotations" print/export).
+        if (api.commit) {
+          api.commit();
+        }
+        return true;
+      },
+      deleteAnnotationsById: async (items: Array<{ pageIndex: number; annotationId: string }>) => {
+        if (!annotation.provides || items.length === 0) return false;
+        const api = annotation.provides as any;
+        if (api.deleteAnnotations) {
+          // Batch capability: stages every delete (each dispatches + registers
+          // with history synchronously) without an intermediate commit.
+          api.deleteAnnotations(items.map((i) => ({ pageIndex: i.pageIndex, id: i.annotationId })));
+        } else {
+          // Fallback for older engines without the batch capability — accept
+          // the same lock-racing risk deleteAnnotationById has.
+          for (const { pageIndex, annotationId } of items) {
+            api.deleteAnnotation(pageIndex, annotationId);
+          }
+        }
+        if (api.commit) {
+          // commit() returns the library's own Task (.wait(onSuccess, onError)
+          // callbacks), not a real Promise — genuinely wait for it here so the
+          // caller can trust the deletion has actually reached the document
+          // by the time this resolves, rather than firing commit and hoping.
+          const task = api.commit();
+          if (task && typeof task.wait === 'function') {
+            await new Promise<void>((resolve, reject) => {
+              task.wait(() => resolve(), (err: any) => reject(err));
+            });
+          }
+        }
+        return true;
+      },
+      deleteAnnotationById: (pageIndex: number, annotationId: string) => {
+        if (!annotation.provides) return false;
+        const api = annotation.provides as any;
+        api.deleteAnnotation(pageIndex, annotationId);
+        // See the comment in deleteSelectedAnnotation above — commit() must
+        // be called explicitly or the deletion never reaches the actual
+        // PDFium document.
         if (api.commit) {
           api.commit();
         }
