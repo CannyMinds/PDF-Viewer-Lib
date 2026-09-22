@@ -693,6 +693,48 @@ const PDFContent = forwardRef<PDFViewerRef, {
     }
   }, [pdfBuffer]);
 
+  // Annotations already baked into a freshly-opened PDF are added to plugin
+  // state in bulk during document load — unlike interactively-placed ones,
+  // no 'create' event fires for them. Tools that paint via the JS layer
+  // instead of a native appearance stream (e.g. the built-in "stamp" tool —
+  // see its useAppearanceStream: false) render their visible content by
+  // asynchronously rasterizing the annotation through the engine
+  // (RenderAnnotation in @embedpdf/plugin-annotation's react bindings) and
+  // swallow any failure silently (`.wait(onSuccess, ignore)` — ignore is a
+  // literal no-op from @embedpdf/models). If that first rasterize races the
+  // engine/page not being fully ready yet right after document load, the
+  // annotation is left permanently blank — only its selection/hover chrome
+  // (border, delete button) still works, since that's a separate layer.
+  // Selecting the annotation happens to remount it and retry, which is why
+  // clicking makes it appear. Force the same remount (already used
+  // elsewhere in this file after importAnnotations()/stamp activation)
+  // ourselves once loaded annotations appear, and again after a short delay
+  // as a retry in case that first forced attempt hit the same race.
+  useEffect(() => {
+    const provides = annotation.provides as any;
+    if (!provides?.onStateChange) return undefined;
+
+    let fired = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const checkAndFire = () => {
+      if (fired) return;
+      const docState = provides.getState?.();
+      const hasAnnotations = docState?.byUid && Object.keys(docState.byUid).length > 0;
+      if (!hasAnnotations) return;
+      fired = true;
+      setAnnotationRenderVersion((v) => v + 1);
+      retryTimer = setTimeout(() => setAnnotationRenderVersion((v) => v + 1), 500);
+    };
+
+    const unsubscribe = provides.onStateChange(checkAndFire);
+    checkAndFire(); // covers the case where annotations are already loaded by the time we subscribe
+
+    return () => {
+      unsubscribe?.();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [annotation.provides, documentId]);
+
   // Update user info ref when userDetails change
   useEffect(() => {
     if (userDetails) {
