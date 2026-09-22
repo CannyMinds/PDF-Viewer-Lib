@@ -17,6 +17,8 @@ import React, {
   useEffect,
   useRef,
   useCallback,
+  useContext,
+  createContext,
   type CSSProperties,
 } from "react";
 import { EmbedPDF } from "@embedpdf/core/react";
@@ -36,6 +38,8 @@ export interface PdfThumbnailSidebarProps {
   currentPage: number;
   /** When true, pages are grouped in 2-page spreads (mirrors the main viewer). */
   twoPageMode?: boolean;
+  /** CSP nonce for the spinner's injected <style> (falls back to window.__nonce__). */
+  nonce?: string;
   /** Called when the user clicks a thumbnail; pass `pageNum` to `navigation.goToPage()`. */
   onPageClick: (pageNum: number) => void;
   /** Called when the user clicks the ✕ / collapse button. */
@@ -78,6 +82,7 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
   onClose,
   accentColor = "#2563eb",
   maxWidth,
+  nonce,
 }) => {
   const resolvedMaxWidth = maxWidth ?? (twoPageMode ? 450 : 320);
   const [width, setWidth] = useState(() => Math.min(twoPageMode ? 360 : 220, resolvedMaxWidth));
@@ -172,6 +177,7 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
   };
 
   return (
+    <SpinnerNonceContext.Provider value={nonce}>
     <div style={containerStyle} className="pdf-viewer-thumbnail-sidebar">
       <div style={panelStyle}>
         {/* ── Header ── */}
@@ -221,6 +227,7 @@ export const PdfThumbnailSidebar: React.FC<PdfThumbnailSidebarProps> = ({
         title="Drag to resize"
       />
     </div>
+    </SpinnerNonceContext.Provider>
   );
 };
 
@@ -504,7 +511,16 @@ const ThumbnailPage: React.FC<ThumbnailPageProps> = ({
 // Tiny spinner (no dependency)
 // ---------------------------------------------------------------------------
 
-const Spinner: React.FC = () => (
+// Nonce for the spinner's <style>, provided by PdfThumbnailSidebar.
+const SpinnerNonceContext = createContext<string | undefined>(undefined);
+
+const Spinner: React.FC = () => {
+  const nonce =
+    useContext(SpinnerNonceContext) ??
+    (typeof window !== "undefined"
+      ? (window as Window & { __nonce__?: string }).__nonce__
+      : undefined);
+  return (
   <div
     style={{
       width: 28,
@@ -515,6 +531,7 @@ const Spinner: React.FC = () => (
       animation: "cm-spin 0.7s linear infinite",
     }}
   >
-    <style>{`@keyframes cm-spin { to { transform: rotate(360deg); } }`}</style>
+    <style nonce={nonce}>{`@keyframes cm-spin { to { transform: rotate(360deg); } }`}</style>
   </div>
-);
+  );
+};
