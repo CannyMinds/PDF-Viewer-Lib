@@ -29,9 +29,20 @@ import {
   useAnnotationCapability,
   AnnotationLayer,
   AnnotationPluginPackage,
+  useRegisterRenderers,
+  createRenderer,
 } from "@embedpdf/plugin-annotation/react";
+import { LockModeType as AnnotationLockModeType } from "@embedpdf/plugin-annotation";
 import { usePrintCapability, PrintPluginPackage } from "@embedpdf/plugin-print/react";
-import { PdfAnnotationSubtype, PdfErrorCode } from "@embedpdf/models";
+// The base (non-React) form package is registered on purpose: the React one
+// auto-mounts its own renderer registration, and we register a wrapped copy of
+// those renderers instead (see lockableFormRenderers) so fields can be made
+// read-only without re-creating the plugin registry.
+import { FormPluginPackage } from "@embedpdf/plugin-form";
+import type { FormFieldInfo } from "@embedpdf/plugin-form";
+import { formRenderers, useFormCapability, useFormPlugin } from "@embedpdf/plugin-form/react";
+import { PdfAnnotationSubtype, PdfErrorCode, PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfStandardFont, PdfTextAlignment, PdfVerticalAlignment } from "@embedpdf/models";
+import { buildFilledPdf, sameFormValues, taskToPromise } from "./utils/formExport";
 import { HistoryPluginPackage } from "@embedpdf/plugin-history";
 import { Rotation } from "@embedpdf/models";
 
@@ -50,12 +61,15 @@ import type { PdfAnnotationObject } from "@embedpdf/models";
 export { ZoomMode, Rotation, usePrintCapability };
 export type { SearchState } from "@embedpdf/plugin-search";
 export type { SearchResult, SearchAllPagesResult, MatchFlag } from "@embedpdf/models";
+export type { FormFieldInfo } from "@embedpdf/plugin-form";
 
 // Import types for internal use
 import type { SearchAllPagesResult } from "@embedpdf/models";
 import type { SearchState } from "@embedpdf/plugin-search";
 
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useImperativeHandle,
@@ -63,6 +77,7 @@ import {
   useMemo,
   useCallback,
   type ReactElement,
+  type ReactNode,
   useState,
   useRef,
   type CSSProperties,
@@ -253,6 +268,380 @@ const SpreadPluginPackage = {
 const useSpreadPlugin = () => usePlugin("spread");
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Fillable forms (AcroForm) — @embedpdf/plugin-form
+//
+// The annotation layer renders a widget with its interactive "fill mode"
+// (text input, checkbox, dropdown…) only while the widget is category-locked
+// — unlocked, the same widget is rendered in "design mode" (draggable,
+// resizable field box), and the form field tools can place new fields.
+// EmbedPDF's own viewer keeps the 'form' category locked by default and
+// unlocks it only in its Form (design) mode; so do we. The 'form' part of the
+// lock is owned here — driven by the enableFormDesign prop — and folded into
+// whatever mode the consumer passes to setLocked() (see resolveLock).
+// ---------------------------------------------------------------------------
+const FORM_FILL_LOCK = { type: AnnotationLockModeType.Include, categories: ["form"] };
+
+// Normalizes a consumer lock mode. The numeric values from ./lock-types never
+// matched the plugin's string enum, so they never locked anything — keep that
+// behaviour (treat them as None) instead of silently changing what they do.
+const normalizeLock = (mode: any): any => {
+  switch (mode?.type) {
+    case AnnotationLockModeType.All:
+    case AnnotationLockModeType.Include:
+    case AnnotationLockModeType.Exclude:
+      return mode;
+    default:
+      return { type: AnnotationLockModeType.None };
+  }
+};
+
+const resolveLock = (requested: any, formDesign: boolean): any => {
+  const mode = normalizeLock(requested);
+  const others = (mode.categories ?? []).filter((c: string) => c !== "form");
+  switch (mode.type) {
+    case AnnotationLockModeType.All:
+      return mode;
+    case AnnotationLockModeType.Include:
+      if (formDesign) return others.length ? { ...mode, categories: others } : { type: AnnotationLockModeType.None };
+      return { ...mode, categories: [...others, "form"] };
+    case AnnotationLockModeType.Exclude:
+      return { ...mode, categories: formDesign ? [...others, "form"] : others };
+    default:
+      return formDesign ? mode : FORM_FILL_LOCK;
+  }
+};
+
+// Form field (AcroForm) tools registered by @embedpdf/plugin-form.
+export type FormFieldToolType = "text" | "checkbox" | "radio" | "dropdown" | "listbox";
+const FORM_FIELD_TOOL_IDS: Record<FormFieldToolType, string> = {
+  text: "formTextField",
+  checkbox: "formCheckbox",
+  radio: "formRadioButton",
+  dropdown: "formCombobox",
+  listbox: "formListbox",
+};
+const isFormFieldToolId = (id: string | null | undefined) =>
+  !!id && Object.values(FORM_FIELD_TOOL_IDS).includes(id);
+
+// True while the host has put the viewer in form edit mode.
+const FormEditingContext = createContext(false);
+
+// View mode: the field shows its value but can't be focused or changed.
+// Edit mode: the field is interactive and highlighted, so users can see where
+// to type — except fields the PDF itself marks read-only.
+//
+// `inert` blocks pointer and keyboard interaction for the whole subtree —
+// the fill-mode components set `pointer-events: auto` on themselves, so a
+// plain `pointer-events: none` wrapper would not stop them. It's toggled
+// through the ref because React 18 and 19 disagree on how the attribute is
+// typed; the wrapper stays the same element in both modes, so the ref must
+// both add and remove it.
+const FormFillGate = ({ fieldReadOnly, children }: { fieldReadOnly: boolean; children: ReactNode }) => {
+  const editing = useContext(FormEditingContext);
+  const setInert = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    if (editing) el.removeAttribute("inert");
+    else el.setAttribute("inert", "");
+  }, [editing]);
+
+  return (
+    <div ref={setInert} style={{ position: "relative", width: "100%", height: "100%" }}>
+      {children}
+      {editing && !fieldReadOnly && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            backgroundColor: "rgba(37, 99, 235, 0.08)",
+            boxShadow: "inset 0 0 0 1px rgba(37, 99, 235, 0.7)",
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+// Field labels (see layoutLabel), keyed by field id, and page widths — for
+// FieldLabelOverlay.
+const FormLabelsContext = createContext<{ labels: Record<string, string>; pageWidths: Record<number, number> }>({
+  labels: {},
+  pageWidths: {},
+});
+
+// Draws a field's label next to it, as part of the field's own rendering:
+// the annotation layer positions a field from its live rect, so the label
+// moves and resizes together with the field while it's being dragged. (The
+// label annotation itself isn't drawn in the viewer — see
+// hiddenFieldLabelRenderer — it's what gets flattened into the saved file.)
+const FieldLabelOverlay = ({ widget, scale }: { widget: any; scale: number }) => {
+  const { labels, pageWidths } = useContext(FormLabelsContext);
+  const text = widget?.id ? labels[widget.id] : undefined;
+  if (!text || !widget?.rect) return null;
+  const layout = layoutLabel(widget, text, pageWidths[widget.pageIndex] ?? Number.MAX_SAFE_INTEGER);
+  const { origin, size } = layout.rect;
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: "absolute",
+        left: (origin.x - widget.rect.origin.x) * scale,
+        top: (origin.y - widget.rect.origin.y) * scale,
+        width: size.width * scale,
+        height: size.height * scale,
+        display: "flex",
+        alignItems: layout.verticalAlign === PdfVerticalAlignment.Bottom ? "flex-end" : "center",
+        justifyContent: layout.textAlign === PdfTextAlignment.Right ? "flex-end" : "flex-start",
+        fontFamily: "Helvetica, Arial, sans-serif",
+        fontSize: layout.fontSize * scale,
+        lineHeight: 1,
+        color: "#000000",
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+        userSelect: "none",
+      }}
+    >
+      {text}
+    </div>
+  );
+};
+
+const withFieldLabel = (content: ReactNode, props: any) => (
+  <>
+    {content}
+    <FieldLabelOverlay widget={props.currentObject} scale={props.scale} />
+  </>
+);
+
+const lockableFormRenderers = formRenderers.map((renderer: any) => ({
+  ...renderer,
+  render: (props: any) => withFieldLabel(renderer.render(props), props),
+  ...(renderer.renderLocked
+    ? {
+        renderLocked: (props: any) =>
+          withFieldLabel(
+            <FormFillGate fieldReadOnly={Boolean((props.currentObject?.field?.flag ?? 0) & PDF_FORM_FIELD_FLAG.READONLY)}>
+              {renderer.renderLocked(props)}
+            </FormFillGate>,
+            props,
+          ),
+      }
+    : {}),
+}));
+
+// Field label annotations are drawn by FieldLabelOverlay instead; claim them
+// before the built-in FreeText renderer and draw nothing.
+const hiddenFieldLabelRenderer = createRenderer({
+  id: "cmFormFieldLabel",
+  matches: (annotation: any) => isFormFieldLabel(annotation),
+  render: () => null,
+  hiddenWhenLocked: true,
+  useAppearanceStream: false,
+} as any);
+
+const FormRendererRegistration = () => {
+  useRegisterRenderers([hiddenFieldLabelRenderer, ...lockableFormRenderers]);
+  return null;
+};
+
+export interface PDFFormState {
+  /** True once the document is known to contain at least one form field. */
+  hasFormFields: boolean;
+  fieldCount: number;
+  /** True when any field value differs from the loaded (or last saved) values. */
+  isDirty: boolean;
+}
+
+export type FormFieldKind = "text" | "checkbox" | "radio" | "dropdown" | "listbox" | "other";
+
+export interface FormFieldOption {
+  label: string;
+  isSelected: boolean;
+}
+
+/** The form field selected in design mode, as reported by onFormFieldSelect. */
+export interface FormFieldDetails {
+  annotationId: string;
+  pageIndex: number;
+  kind: FormFieldKind;
+  name: string;
+  /** Default value (text fields) / current value. */
+  value: string;
+  /** Text fields: maximum number of characters, if limited. */
+  maxLen?: number;
+  /** Dropdowns and list boxes. */
+  options?: FormFieldOption[];
+  readOnly: boolean;
+  required: boolean;
+  /** Text fields. */
+  multiline: boolean;
+  /** Text fields: one character per box; needs maxLen. */
+  comb: boolean;
+  /** List boxes. */
+  multiSelect: boolean;
+  /** Visible label drawn on the page just before the field ('' = none). */
+  label: string;
+}
+
+/** Field properties that can be changed with ref.forms.updateField(). */
+export interface FormFieldChanges {
+  value?: string;
+  /** 0 / null removes the limit (and comb). */
+  maxLen?: number | null;
+  options?: FormFieldOption[];
+  readOnly?: boolean;
+  required?: boolean;
+  multiline?: boolean;
+  comb?: boolean;
+  multiSelect?: boolean;
+  /** Visible label text; '' removes the label. */
+  label?: string;
+}
+
+export type RenameFormFieldResult =
+  | { outcome: "renamed" | "no-op" }
+  /** Another field already has this name; shareField() can merge them. */
+  | { outcome: "conflict"; fieldName: string; targetAnnotationId: string };
+
+const FIELD_KINDS: Partial<Record<PDF_FORM_FIELD_TYPE, FormFieldKind>> = {
+  [PDF_FORM_FIELD_TYPE.TEXTFIELD]: "text",
+  [PDF_FORM_FIELD_TYPE.CHECKBOX]: "checkbox",
+  [PDF_FORM_FIELD_TYPE.RADIOBUTTON]: "radio",
+  [PDF_FORM_FIELD_TYPE.COMBOBOX]: "dropdown",
+  [PDF_FORM_FIELD_TYPE.LISTBOX]: "listbox",
+};
+
+const toFieldDetails = (widget: any, label = ""): FormFieldDetails => {
+  const field = widget.field ?? {};
+  const flag = field.flag ?? 0;
+  return {
+    annotationId: widget.id,
+    pageIndex: widget.pageIndex,
+    kind: FIELD_KINDS[field.type as PDF_FORM_FIELD_TYPE] ?? "other",
+    name: field.name ?? "",
+    value: field.value ?? "",
+    ...(field.maxLen ? { maxLen: field.maxLen } : {}),
+    ...(Array.isArray(field.options) ? { options: field.options.map((o: any) => ({ label: o.label, isSelected: !!o.isSelected })) } : {}),
+    readOnly: !!(flag & PDF_FORM_FIELD_FLAG.READONLY),
+    required: !!(flag & PDF_FORM_FIELD_FLAG.REQUIRED),
+    multiline: !!(flag & PDF_FORM_FIELD_FLAG.TEXT_MULTIPLINE),
+    comb: !!(flag & PDF_FORM_FIELD_FLAG.TEXT_COMB),
+    multiSelect: !!(flag & PDF_FORM_FIELD_FLAG.CHOICE_MULTL_SELECT),
+    label,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Field labels
+//
+// A label is a FreeText annotation linked to its field (custom marker below)
+// and placed just before it: right-aligned, ending LABEL_GAP points left of
+// the field — or above the field when there's no room on its left. It's
+// read-only on the page (edited through updateField({ label })), follows the
+// field when it's moved or resized, and is deleted with it. getFilledPdf()
+// flattens labels into page content, so the saved form has printed labels
+// rather than annotations.
+// ---------------------------------------------------------------------------
+export const FORM_FIELD_LABEL_MARKER = "cmFormFieldLabel";
+// Space between the end of the label and the field, in points.
+const LABEL_GAP = 10;
+
+// Helvetica advance widths (1/1000 em) for ASCII 32–126, from the standard
+// Adobe font metrics — PDFium draws the standard Helvetica font (or a
+// metric-compatible substitute), so this measures labels exactly.
+const HELVETICA_WIDTHS = [
+  278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, // space ! " # $ % & ' ( ) * + , - . /
+  556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, // 0–9 : ; < = > ?
+  1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, // @ A–O
+  667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, // P–Z [ \ ] ^ _
+  333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, // ` a–o
+  556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584, // p–z { | } ~
+];
+
+const measureHelvetica = (text: string, fontSize: number) => {
+  let units = 0;
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    // Characters outside ASCII: assume a wide glyph rather than clip it.
+    units += code >= 32 && code <= 126 ? HELVETICA_WIDTHS[code - 32]! : 667;
+  }
+  return (units / 1000) * fontSize;
+};
+
+// "Name" → "Name :" (a colon the user typed isn't doubled).
+const formatLabelText = (text: string) => `${text.trim().replace(/[\s:]+$/, "")} :`;
+
+export const isFormFieldLabel = (annotation: any) => !!annotation?.custom?.[FORM_FIELD_LABEL_MARKER];
+
+// The label as the user typed it (without the " :" added for display).
+const labelTextOf = (label: any): string =>
+  label ? (label.custom?.labelText ?? String(label.contents ?? "").replace(/\s*:\s*$/, "")) : "";
+
+const layoutLabel = (widget: any, text: string, pageWidth: number) => {
+  const fontSize = widget.fontSize >= 6 && widget.fontSize <= 20 ? widget.fontSize : 11;
+  const lineHeight = Math.ceil(fontSize * 1.6);
+  // Measured text plus room for the margin PDFium keeps inside a FreeText
+  // box; right-aligned, so any slack ends up on the label's left.
+  const width = Math.ceil(measureHelvetica(text, fontSize) + fontSize * 0.6 + 6);
+  const { origin, size } = widget.rect;
+  // Single-line fields: centre on the field. Tall ones (list boxes,
+  // multi-line text): align with their first line.
+  const height = size.height <= lineHeight * 1.5 ? size.height : lineHeight;
+
+  if (origin.x - LABEL_GAP - width >= 0) {
+    return {
+      fontSize,
+      rect: { origin: { x: origin.x - LABEL_GAP - width, y: origin.y }, size: { width, height } },
+      textAlign: PdfTextAlignment.Right,
+      verticalAlign: PdfVerticalAlignment.Middle,
+    };
+  }
+  const aboveY = origin.y - lineHeight - 2;
+  if (aboveY >= 0) {
+    return {
+      fontSize,
+      rect: { origin: { x: origin.x, y: aboveY }, size: { width: Math.min(Math.max(width, size.width), pageWidth - origin.x), height: lineHeight } },
+      textAlign: PdfTextAlignment.Left,
+      verticalAlign: PdfVerticalAlignment.Bottom,
+    };
+  }
+  return {
+    fontSize,
+    rect: { origin: { x: 0, y: origin.y }, size: { width: Math.max(origin.x - LABEL_GAP, 10), height } },
+    textAlign: PdfTextAlignment.Right,
+    verticalAlign: PdfVerticalAlignment.Middle,
+  };
+};
+
+// Applies FormFieldChanges to a widget's field (flag bits, maxLen, options…).
+const applyFieldChanges = (field: any, changes: FormFieldChanges) => {
+  let flag = field.flag ?? 0;
+  const setFlag = (bit: number, on: boolean | undefined) => {
+    if (on === undefined) return;
+    flag = on ? flag | bit : flag & ~bit;
+  };
+  setFlag(PDF_FORM_FIELD_FLAG.READONLY, changes.readOnly);
+  setFlag(PDF_FORM_FIELD_FLAG.REQUIRED, changes.required);
+  setFlag(PDF_FORM_FIELD_FLAG.TEXT_MULTIPLINE, changes.multiline);
+  setFlag(PDF_FORM_FIELD_FLAG.TEXT_COMB, changes.comb);
+  setFlag(PDF_FORM_FIELD_FLAG.CHOICE_MULTL_SELECT, changes.multiSelect);
+
+  const next: any = { ...field };
+  if (changes.value !== undefined) next.value = changes.value;
+  if (changes.options !== undefined) next.options = changes.options.map((o) => ({ label: o.label, isSelected: !!o.isSelected }));
+  if (changes.maxLen !== undefined) {
+    const maxLen = changes.maxLen && changes.maxLen > 0 ? Math.floor(changes.maxLen) : undefined;
+    next.maxLen = maxLen;
+    // Comb spreads the characters over maxLen boxes — meaningless without it.
+    if (!maxLen) flag &= ~PDF_FORM_FIELD_FLAG.TEXT_COMB;
+  }
+  next.flag = flag;
+  return next;
+};
+
+// ---------------------------------------------------------------------------
+
 type AnnotationSelectionMenu = (props: {
   annotation: any;
   selected: boolean;
@@ -343,6 +732,34 @@ export interface PDFViewerProps {
   twoPageMode?: boolean | undefined;
   scrollStrategy?: ScrollStrategy | undefined;
   onPageChange?: ((page: number) => void) | undefined;
+  /**
+   * Form edit mode: when true the user can type into the PDF's fillable form
+   * fields (AcroForm), and the fields are highlighted. When false (view mode)
+   * fields are shown with their current values but can't be changed — hosts
+   * typically bind this to an "Edit" button.
+   * @default false
+   */
+  enableFormFilling?: boolean;
+  /**
+   * Called once form fields are detected after load, and whenever a field
+   * value changes. Use `isDirty` to drive a "Save" action and
+   * `ref.forms.getFilledPdf()` to get the bytes to save.
+   */
+  onFormStateChange?: (state: PDFFormState) => void;
+  /**
+   * Form design mode: fields are shown as boxes that can be moved and
+   * resized, and `ref.forms.activateFieldTool()` places new fields with a
+   * click on the page. Fields can't be filled in while designing — turn this
+   * off (and `enableFormFilling` on) to type into them.
+   * @default false
+   */
+  enableFormDesign?: boolean;
+  /**
+   * Called with the form field selected in design mode (or null when the
+   * selection is cleared) and again whenever its properties change — use it
+   * to show a field properties panel driven by ref.forms.updateField().
+   */
+  onFormFieldSelect?: (field: FormFieldDetails | null) => void;
 }
 
 export interface PDFViewerRef {
@@ -430,6 +847,9 @@ export interface PDFViewerRef {
     activateSignature: () => void;
     deactivateSignature: () => void;
     isSignatureActive: () => boolean;
+    activateTool: (toolId: string) => void;
+    deactivateTool: () => void;
+    getActiveTool: () => any | null;
     addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: { author?: string; customData?: any }) => boolean;
     addSignatureAnnotation: (signatureDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number) => boolean;
     deleteSelectedAnnotation: () => boolean;
@@ -478,10 +898,43 @@ export interface PDFViewerRef {
     printWithAnnotations: () => Promise<void>;
     printWithoutAnnotations: () => Promise<void>;
   };
+  /** Fillable form (AcroForm) fields — view, fill and save. */
+  forms: {
+    getFormState: () => PDFFormState;
+    getFormFields: () => FormFieldInfo[];
+    /** Current values keyed by field name. */
+    getFormValues: () => Record<string, string>;
+    /** Sets values by field name. Resolves false if forms are unavailable. */
+    setFormValues: (values: Record<string, string>) => Promise<boolean>;
+    /**
+     * The PDF with its form fields as they are in the viewer — added, moved
+     * or removed fields and all filled-in values — but without annotations
+     * imported through importAnnotations() or drawn in the viewer. Resolves
+     * null when the document isn't loaded.
+     */
+    getFilledPdf: () => Promise<ArrayBuffer | null>;
+    /** Treats the current fields and values as saved, so `isDirty` becomes false. */
+    markFormSaved: () => void;
+    /** Arms a field tool: the next click on a page places that field.
+     * Only works while `enableFormDesign` is on. */
+    activateFieldTool: (type: FormFieldToolType) => void;
+    deactivateFieldTool: () => void;
+    getActiveFieldTool: () => FormFieldToolType | null;
+    /** The form field selected in design mode, or null. */
+    getSelectedField: () => FormFieldDetails | null;
+    /** Changes field properties (value, maxLen, options, flags). */
+    updateField: (annotationId: string, changes: FormFieldChanges) => boolean;
+    /** Renames the field. On a name clash nothing changes and the result says
+     * which field has the name — call shareField() to merge them. */
+    renameField: (annotationId: string, name: string) => Promise<RenameFormFieldResult>;
+    /** Makes the widget part of the target widget's field (same name, shared value). */
+    shareField: (annotationId: string, targetAnnotationId: string) => Promise<boolean>;
+    deleteField: (annotationId: string) => boolean;
+  };
 }
 
 // Helper component to handle password logic without side-effects in render
-const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { documentState: any; documentId: string; onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null> }) => {
+const PasswordLogic = ({ documentState, documentId, onPasswordRequest, onPasswordAccepted }: { documentState: any; documentId: string; onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null>; onPasswordAccepted?: (password: string) => void }) => {
   const { provides } = useDocumentManagerCapability();
   const isHandlingPasswordRef = useRef<boolean>(false);
   const hasHandledInitialRef = useRef<boolean>(false);
@@ -505,6 +958,7 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
             console.log('[PasswordLogic] Password accepted!');
             isHandlingPasswordRef.current = false;
             hasHandledInitialRef.current = false;
+            onPasswordAccepted?.(password);
           },
           // Error callback - wrong password, prompt again
           (error: any) => {
@@ -519,7 +973,7 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
         isHandlingPasswordRef.current = false;
       }
     });
-  }, [provides, onPasswordRequest, documentId]);
+  }, [provides, onPasswordRequest, onPasswordAccepted, documentId]);
 
   useEffect(() => {
     if (!documentState || !onPasswordRequest || !provides) return;
@@ -608,6 +1062,10 @@ const PDFContent = forwardRef<PDFViewerRef, {
   twoPageMode?: boolean | undefined;
   scrollStrategy?: ScrollStrategy | undefined;
   onPageChange?: ((page: number) => void) | undefined;
+  enableFormFilling: boolean;
+  enableFormDesign: boolean;
+  onFormFieldSelect?: ((field: FormFieldDetails | null) => void) | undefined;
+  onFormStateChange?: ((state: PDFFormState) => void) | undefined;
 }>(({
   isReady,
   isLoading,
@@ -621,7 +1079,11 @@ const PDFContent = forwardRef<PDFViewerRef, {
   hideInternalLoading,
   twoPageMode,
   scrollStrategy,
-  onPageChange
+  onPageChange,
+  enableFormFilling,
+  enableFormDesign,
+  onFormFieldSelect,
+  onFormStateChange,
 }, ref) => {
   // v2.x hooks now require documentId for multi-document support
   const zoom = useZoom(documentId);
@@ -634,6 +1096,317 @@ const PDFContent = forwardRef<PDFViewerRef, {
   const selection = useSelectionCapability();
   const docState = useDocumentState(documentId);
   const { plugin: spreadPlugin } = useSpreadPlugin() as any;
+  const { provides: formCapability } = useFormCapability();
+  const { plugin: formPlugin } = useFormPlugin();
+
+  // Every field edit is written into the document asynchronously (one write
+  // per keystroke for text fields). Count the writes in flight so
+  // getFilledPdf() can wait for them — otherwise a save right after typing
+  // can read the document before the last characters have landed.
+  const pendingFormWritesRef = useRef(0);
+  const formWritesIdleRef = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    const plugin = formPlugin as any;
+    if (!plugin) return undefined;
+    const track = (method: string) => {
+      const original = plugin[method];
+      if (typeof original !== "function") return () => undefined;
+      plugin[method] = function (this: unknown, ...args: unknown[]) {
+        const task = original.apply(this, args);
+        pendingFormWritesRef.current += 1;
+        const settle = () => {
+          pendingFormWritesRef.current -= 1;
+          if (pendingFormWritesRef.current === 0) {
+            const waiters = formWritesIdleRef.current;
+            formWritesIdleRef.current = [];
+            waiters.forEach((resolve) => resolve());
+          }
+        };
+        if (typeof task?.wait === "function") task.wait(settle, settle);
+        else settle();
+        return task;
+      };
+      // The plugin's scopes call `this.<method>` at call time, so wrapping the
+      // instance catches every write; deleting the wrapper restores the
+      // prototype method.
+      return () => {
+        delete plugin[method];
+      };
+    };
+    const untrack = [track("setFormFieldValues"), track("setFormValuesMethod")];
+    return () => untrack.forEach((restore) => restore());
+  }, [formPlugin]);
+
+  const waitForFormWrites = useCallback(() => {
+    if (pendingFormWritesRef.current === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      formWritesIdleRef.current.push(resolve);
+      // Never let a stuck write block saving forever.
+      setTimeout(resolve, 10000);
+    });
+  }, []);
+
+  // Form fill state. The baseline is what "not dirty" means: the values the
+  // document loaded with, or the values at the last markFormSaved().
+  const formBaselineRef = useRef<{ fieldCount: number; values: Record<string, string> | null } | null>(null);
+  const formStateRef = useRef<PDFFormState>({ hasFormFields: false, fieldCount: 0, isDirty: false });
+  const onFormStateChangeRef = useRef(onFormStateChange);
+  onFormStateChangeRef.current = onFormStateChange;
+  // Needed to re-open the original bytes in getFilledPdf() for encrypted files.
+  const acceptedPasswordRef = useRef<string | undefined>(undefined);
+  const handlePasswordAccepted = useCallback((password: string) => {
+    acceptedPasswordRef.current = password;
+  }, []);
+  // Consumer-requested lock mode, returned as-is by getLocked().
+  const requestedLockRef = useRef<LockMode | null>(null);
+
+  // Ids of annotations that are not part of the original file: imported by
+  // the host through importAnnotations() (e.g. from its own database) or
+  // drawn in the viewer. getFilledPdf() leaves these out of the saved file.
+  // Imports don't emit annotation events, so they're recorded where they
+  // pass through importAnnotations() below.
+  const addedAnnotationIdsRef = useRef<Set<string>>(new Set());
+  // Ids of form field widgets deleted in the viewer — when there are any,
+  // getFilledPdf() also removes them from the form's field tree (PDFium only
+  // takes them off the page).
+  const deletedFieldWidgetIdsRef = useRef<Set<string>>(new Set());
+  // Field id → id of its label annotation (see layoutLabel).
+  const fieldLabelsRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    addedAnnotationIdsRef.current = new Set();
+    deletedFieldWidgetIdsRef.current = new Set();
+    fieldLabelsRef.current = new Map();
+  }, [documentId]);
+
+  const getAnnotationObject = useCallback((annotationId: string): any => {
+    return (annotation.provides as any)?.getState?.()?.byUid?.[annotationId]?.object ?? null;
+  }, [annotation.provides]);
+
+  const getFieldLabel = useCallback((fieldId: string): any => {
+    const labelId = fieldLabelsRef.current.get(fieldId);
+    if (!labelId) return null;
+    const label = getAnnotationObject(labelId);
+    if (!label) fieldLabelsRef.current.delete(fieldId);
+    return label;
+  }, [getAnnotationObject]);
+
+  // Creates, updates or (for empty text) removes the label of a field.
+  const setFieldLabel = useCallback((widget: any, text: string) => {
+    const cap = annotation.provides as any;
+    if (!cap) return;
+    const existing = getFieldLabel(widget.id);
+    const trimmed = text.trim();
+    if (!trimmed) {
+      if (existing) {
+        // deleteAnnotation() always clears the selection — keep the field
+        // selected (its properties panel open) when only its label goes.
+        const wasSelected = cap.getSelectedAnnotation?.()?.object?.id === widget.id;
+        cap.deleteAnnotation(existing.pageIndex, existing.id);
+        cap.commit?.();
+        if (wasSelected) cap.selectAnnotation?.(widget.pageIndex, widget.id);
+      }
+      fieldLabelsRef.current.delete(widget.id);
+      return;
+    }
+    const pageWidth = docState?.document?.pages?.[widget.pageIndex]?.size?.width ?? Number.MAX_SAFE_INTEGER;
+    // Shown as "Label :"; the text as typed is kept in custom.labelText.
+    const contents = formatLabelText(trimmed);
+    const layout = layoutLabel(widget, contents, pageWidth);
+    const custom = { [FORM_FIELD_LABEL_MARKER]: true, fieldId: widget.id, labelText: trimmed };
+    if (existing) {
+      cap.updateAnnotation(existing.pageIndex, existing.id, { contents, custom, ...layout });
+    } else {
+      const id = `label-${widget.id}-${Math.random().toString(36).slice(2, 9)}`;
+      fieldLabelsRef.current.set(widget.id, id);
+      cap.createAnnotation(widget.pageIndex, {
+        type: PdfAnnotationSubtype.FREETEXT,
+        id,
+        pageIndex: widget.pageIndex,
+        contents,
+        fontFamily: PdfStandardFont.Helvetica,
+        fontColor: '#000000',
+        opacity: 1,
+        flags: ['print', 'readOnly'],
+        custom,
+        ...layout,
+      });
+    }
+    cap.commit?.();
+  }, [annotation.provides, getFieldLabel, docState]);
+
+  useEffect(() => {
+    const off = (annotation.provides as any)?.onAnnotationEvent?.((event: any) => {
+      const ann = event?.annotation;
+      if (!ann?.id) return;
+      if (ann.type === PdfAnnotationSubtype.WIDGET) {
+        const fieldId = String(ann.id);
+        if (event.type === 'delete') {
+          deletedFieldWidgetIdsRef.current.add(fieldId);
+          // The label goes with its field.
+          const label = getFieldLabel(fieldId);
+          if (label) {
+            const cap = annotation.provides as any;
+            cap?.deleteAnnotation(label.pageIndex, label.id);
+            cap?.commit?.();
+          }
+          fieldLabelsRef.current.delete(fieldId);
+        } else if (event.type === 'update' && fieldLabelsRef.current.has(fieldId)) {
+          // Keep the label next to a moved / resized field. Read the field
+          // after the plugin has applied the update to its state.
+          setTimeout(() => {
+            const widget = getAnnotationObject(fieldId);
+            const label = getFieldLabel(fieldId);
+            if (widget?.type === PdfAnnotationSubtype.WIDGET && label) setFieldLabel(widget, labelTextOf(label));
+          }, 0);
+        }
+        return;
+      }
+      if (event.type === 'create' && !isFormFieldLabel(ann)) addedAnnotationIdsRef.current.add(String(ann.id));
+    });
+    return () => off?.();
+  }, [annotation.provides, getFieldLabel, getAnnotationObject, setFieldLabel]);
+
+  // Label text by field id, for FieldLabelOverlay (which draws the labels in
+  // the viewer, attached to their fields).
+  const [formLabels, setFormLabels] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const cap = annotation.provides as any;
+    if (!cap?.onStateChange) return undefined;
+    const refresh = () => {
+      const next: Record<string, string> = {};
+      fieldLabelsRef.current.forEach((labelId, fieldId) => {
+        const label = getAnnotationObject(labelId);
+        if (label?.contents) next[fieldId] = label.contents;
+      });
+      setFormLabels((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    const off = cap.onStateChange(refresh);
+    refresh();
+    return () => off?.();
+  }, [annotation.provides, getAnnotationObject, documentId]);
+  const formLabelsContext = useMemo(() => {
+    const pageWidths: Record<number, number> = {};
+    (docState?.document?.pages ?? []).forEach((page: any) => {
+      pageWidths[page.index] = page.size?.width;
+    });
+    return { labels: formLabels, pageWidths };
+  }, [formLabels, docState?.document]);
+
+  // The form field selected in design mode (fields can only be selected
+  // there — in fill mode they're locked). Re-published when its properties
+  // change, so a properties panel stays in sync.
+  const selectedFieldRef = useRef<FormFieldDetails | null>(null);
+  const onFormFieldSelectRef = useRef(onFormFieldSelect);
+  onFormFieldSelectRef.current = onFormFieldSelect;
+  useEffect(() => {
+    const cap = annotation.provides as any;
+    if (!cap?.onStateChange) return undefined;
+    const publish = () => {
+      const selected = cap.getSelectedAnnotation?.()?.object;
+      const next = selected?.type === PdfAnnotationSubtype.WIDGET && selected.field
+        ? toFieldDetails(selected, labelTextOf(getFieldLabel(selected.id)))
+        : null;
+      if (JSON.stringify(next) === JSON.stringify(selectedFieldRef.current)) return;
+      selectedFieldRef.current = next;
+      onFormFieldSelectRef.current?.(next);
+    };
+    const off = cap.onStateChange(publish);
+    publish();
+    return () => {
+      off?.();
+      if (selectedFieldRef.current) {
+        selectedFieldRef.current = null;
+        onFormFieldSelectRef.current?.(null);
+      }
+    };
+  }, [annotation.provides, documentId, getFieldLabel]);
+
+  const findWidget = useCallback((annotationId: string): any => {
+    const cap = annotation.provides as any;
+    const tracked = cap?.getState?.()?.byUid?.[annotationId];
+    const object = tracked?.object;
+    return object?.type === PdfAnnotationSubtype.WIDGET ? object : null;
+  }, [annotation.provides]);
+  const enableFormDesignRef = useRef(enableFormDesign);
+  enableFormDesignRef.current = enableFormDesign;
+
+  // Single place the annotation lock is applied: the consumer's requested
+  // mode with the 'form' category locked (fill) or unlocked (design).
+  const applyLock = useCallback(() => {
+    const cap = annotation.provides as any;
+    cap?.setLocked?.(resolveLock(requestedLockRef.current, enableFormDesignRef.current));
+  }, [annotation.provides]);
+
+  useEffect(() => {
+    applyLock();
+    if (!enableFormDesign) {
+      // A field tool left armed would keep placing fields that then render
+      // in fill mode — disarm it when design mode ends.
+      const cap = annotation.provides as any;
+      if (isFormFieldToolId(cap?.getActiveTool?.()?.id)) {
+        cap.setActiveTool(null);
+      }
+    }
+  }, [enableFormDesign, applyLock, annotation.provides, documentId]);
+
+  // Set when a field is added, moved, resized or removed (design mode) —
+  // changes that don't show up in the field count or values alone.
+  const formStructureChangedRef = useRef(false);
+
+  const publishFormState = useCallback(() => {
+    if (!formCapability) return;
+    const scope = formCapability.forDocument(documentId);
+    const fieldCount = scope.getFormFields().length;
+    const values = scope.getFormValues();
+    const next: PDFFormState = {
+      hasFormFields: fieldCount > 0,
+      fieldCount,
+      isDirty: formStructureChangedRef.current
+        || fieldCount !== formBaselineRef.current?.fieldCount
+        || !sameFormValues(formBaselineRef.current?.values || null, values),
+    };
+    const prev = formStateRef.current;
+    formStateRef.current = next;
+    if (prev.hasFormFields !== next.hasFormFields || prev.fieldCount !== next.fieldCount || prev.isDirty !== next.isDirty) {
+      onFormStateChangeRef.current?.(next);
+    }
+  }, [formCapability, documentId]);
+
+  useEffect(() => {
+    if (!formCapability) return undefined;
+    const scope = formCapability.forDocument(documentId);
+    formStructureChangedRef.current = false;
+    formBaselineRef.current = {
+      fieldCount: scope.getFormFields().length,
+      values: scope.getFormFields().length > 0 ? scope.getFormValues() : null,
+    };
+    formStateRef.current = { hasFormFields: false, fieldCount: 0, isDirty: false };
+    publishFormState();
+
+    const offReady = scope.onFormReady(() => {
+      formBaselineRef.current = {
+        fieldCount: scope.getFormFields().length,
+        values: scope.getFormValues(),
+      };
+      publishFormState();
+    });
+    const offChange = scope.onFieldValueChange(() => publishFormState());
+    // Fields added, moved or removed in design mode arrive as widget
+    // annotation events. The form plugin rebuilds its field index in its own
+    // listener for the same event, so read the fields after it has run.
+    const offWidgets = (annotation.provides as any)?.onAnnotationEvent?.((event: any) => {
+      if (event?.annotation?.type !== PdfAnnotationSubtype.WIDGET) return;
+      if (event.type === 'create' || event.type === 'update' || event.type === 'delete') {
+        formStructureChangedRef.current = true;
+      }
+      setTimeout(publishFormState, 0);
+    });
+    return () => {
+      offReady();
+      offChange();
+      offWidgets?.();
+    };
+  }, [formCapability, documentId, publishFormState, annotation.provides]);
 
   // Track annotations with metadata
   const [annotationsMetadata, setAnnotationsMetadata] = useState<Map<string, any>>(new Map());
@@ -1067,6 +1840,15 @@ const PDFContent = forwardRef<PDFViewerRef, {
           return newMap;
         });
       }
+
+      // If a form field (Widget) is added/deleted/updated, we need to refresh the form state
+      // so the Save Form button enables.
+      if (
+        event.annotation?.type === PdfAnnotationSubtype.WIDGET ||
+        event.annotation?.type === 'Widget'
+      ) {
+        publishFormState();
+      }
     });
 
     return () => {
@@ -1074,7 +1856,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
         unsubscribe();
       }
     };
-  }, [annotation.provides, userDetails]);
+  }, [annotation.provides, userDetails, publishFormState]);
 
   const performScrollToPage = useCallback((page: number) => {
     if (scroll.provides) {
@@ -1406,6 +2188,18 @@ const PDFContent = forwardRef<PDFViewerRef, {
         if (!annotation.provides) return;
         annotation.provides.setActiveTool(null);
       },
+      activateTool: (toolId: string) => {
+        if (!annotation.provides) return;
+        annotation.provides.setActiveTool(toolId);
+      },
+      deactivateTool: () => {
+        if (!annotation.provides) return;
+        annotation.provides.setActiveTool(null);
+      },
+      getActiveTool: () => {
+        if (!annotation.provides) return null;
+        return annotation.provides.getActiveTool();
+      },
       isSignatureActive: () => {
         if (!annotation.provides) return false;
         return annotation.provides.getActiveTool()?.id === 'ink';
@@ -1579,6 +2373,10 @@ const PDFContent = forwardRef<PDFViewerRef, {
         }
 
         const api = annotation.provides as any;
+
+        for (const item of annotations) {
+          if (item.annotation?.id) addedAnnotationIdsRef.current.add(String(item.annotation.id));
+        }
 
         // Pre-process annotations to ensure stamps have robust context data.
         // For stamps (type 13), if ctx.imageData is missing, inject the imageSrc string.
@@ -1789,14 +2587,13 @@ const PDFContent = forwardRef<PDFViewerRef, {
         return cap?.isAnnotationContentLocked?.(ann) ?? false;
       },
 
-      // v2.14.1 document-level lock mode
+      // v2.14.1 document-level lock mode.
       setLocked: (mode) => {
-        const cap = annotation.provides as any;
-        cap?.setLocked?.(mode);
+        requestedLockRef.current = mode;
+        applyLock();
       },
       getLocked: () => {
-        const cap = annotation.provides as any;
-        return cap?.getLocked?.() ?? ({ type: 0 /* LockModeType.None */ } as LockMode);
+        return requestedLockRef.current ?? ({ type: 0 /* LockModeType.None */ } as LockMode);
       },
     },
     download: {
@@ -1863,7 +2660,113 @@ const PDFContent = forwardRef<PDFViewerRef, {
         print.provides.print({ includeAnnotations: false });
       },
     },
-  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool, verifiedTotalPages, docState]);
+    forms: {
+      getFormState: () => formStateRef.current,
+      getFormFields: () => formCapability?.forDocument(documentId).getFormFields() ?? [],
+      getFormValues: () => formCapability?.forDocument(documentId).getFormValues() ?? {},
+      setFormValues: async (values: Record<string, string>) => {
+        if (!formCapability) return false;
+        return taskToPromise<boolean>(formCapability.forDocument(documentId).setFormValues(values));
+      },
+      getFilledPdf: async () => {
+        const doc = docState?.document;
+        if (!engine || !doc || !pdfBuffer) {
+          console.error('[PDFViewer] getFilledPdf: document not loaded');
+          return null;
+        }
+        // Let a field that is just losing focus start its final write, then
+        // wait for all writes to reach the document.
+        await waitForNextFrame();
+        await waitForFormWrites();
+        return buildFilledPdf(
+          engine,
+          doc,
+          addedAnnotationIdsRef.current,
+          new Set(fieldLabelsRef.current.values()),
+          deletedFieldWidgetIdsRef.current.size > 0,
+          pdfBuffer,
+          acceptedPasswordRef.current,
+        );
+      },
+      markFormSaved: () => {
+        if (!formCapability) return;
+        const scope = formCapability.forDocument(documentId);
+        formStructureChangedRef.current = false;
+        formBaselineRef.current = {
+          fieldCount: scope.getFormFields().length,
+          values: scope.getFormValues(),
+        };
+        publishFormState();
+      },
+      activateFieldTool: (type: FormFieldToolType) => {
+        const cap = annotation.provides as any;
+        if (!cap) return;
+        if (!enableFormDesignRef.current) {
+          console.warn('[PDFViewer] activateFieldTool: enable form design mode (enableFormDesign) first');
+          return;
+        }
+        cap.setActiveTool(FORM_FIELD_TOOL_IDS[type]);
+      },
+      deactivateFieldTool: () => {
+        const cap = annotation.provides as any;
+        if (isFormFieldToolId(cap?.getActiveTool?.()?.id)) {
+          cap.setActiveTool(null);
+        }
+      },
+      getActiveFieldTool: () => {
+        const id = (annotation.provides as any)?.getActiveTool?.()?.id;
+        const entry = Object.entries(FORM_FIELD_TOOL_IDS).find(([, toolId]) => toolId === id);
+        return entry ? (entry[0] as FormFieldToolType) : null;
+      },
+      getSelectedField: () => selectedFieldRef.current,
+      updateField: (annotationId: string, changes: FormFieldChanges) => {
+        const cap = annotation.provides as any;
+        const widget = findWidget(annotationId);
+        if (!cap || !widget) return false;
+        const { label, ...fieldChanges } = changes;
+        if (Object.keys(fieldChanges).length > 0) {
+          // Same write EmbedPDF's own form panel uses: the engine rewrites the
+          // field's flags, value, MaxLen and options from the patched field.
+          const patch = { field: applyFieldChanges(widget.field, fieldChanges) };
+          if (typeof cap.updateAnnotations === 'function') {
+            cap.updateAnnotations([{ pageIndex: widget.pageIndex, id: annotationId, patch }]);
+          } else {
+            cap.updateAnnotation(widget.pageIndex, annotationId, patch);
+          }
+        }
+        if (label !== undefined) setFieldLabel(widget, label);
+        formStructureChangedRef.current = true;
+        publishFormState();
+        return true;
+      },
+      renameField: async (annotationId: string, name: string) => {
+        if (!formCapability) return { outcome: 'no-op' } as RenameFormFieldResult;
+        const result: any = await taskToPromise(formCapability.forDocument(documentId).renameField(annotationId, name.trim()));
+        if (result?.outcome === 'renamed') {
+          formStructureChangedRef.current = true;
+          publishFormState();
+        }
+        return result as RenameFormFieldResult;
+      },
+      shareField: async (annotationId: string, targetAnnotationId: string) => {
+        if (!formCapability) return false;
+        const ok = await taskToPromise<boolean>(formCapability.forDocument(documentId).shareField(annotationId, targetAnnotationId));
+        if (ok) {
+          formStructureChangedRef.current = true;
+          publishFormState();
+        }
+        return ok;
+      },
+      deleteField: (annotationId: string) => {
+        const cap = annotation.provides as any;
+        const widget = findWidget(annotationId);
+        if (!cap || !widget) return false;
+        cap.deleteAnnotation(widget.pageIndex, annotationId);
+        cap.commit?.();
+        return true;
+      },
+    },
+  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool, verifiedTotalPages, docState, formCapability, documentId, publishFormState, waitForFormWrites, waitForNextFrame, findWidget, setFieldLabel]);
 
   const currentZoom = zoom.state?.currentZoomLevel || 1;
 
@@ -1964,6 +2867,9 @@ const PDFContent = forwardRef<PDFViewerRef, {
   }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom]);
 
   return (
+    <FormEditingContext.Provider value={enableFormFilling}>
+    <FormLabelsContext.Provider value={formLabelsContext}>
+    <FormRendererRegistration />
     <DocumentContent documentId={documentId}>
       {({ isLoaded, documentState }) => {
         console.log('[PDFContent] DocumentContent render:', {
@@ -1984,6 +2890,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
             <PasswordLogic
               documentState={documentState}
               documentId={documentId}
+              onPasswordAccepted={handlePasswordAccepted}
               {...(onPasswordRequest ? { onPasswordRequest } : {})}
             />
             {isLoaded ? (
@@ -2026,11 +2933,13 @@ const PDFContent = forwardRef<PDFViewerRef, {
         );
       }}
     </DocumentContent>
+    </FormLabelsContext.Provider>
+    </FormEditingContext.Provider>
   );
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange, enableFormFilling = false, enableFormDesign = false, onFormStateChange, onFormFieldSelect },
   ref
 ): ReactElement | null {
   const {
@@ -2071,6 +2980,20 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
       console.log('[PDFViewer] Same PDF content (hash unchanged), keeping existing ID:', documentId);
     }
   }, [pdfBuffer]);
+
+  // @embedpdf/engines 2.15 orders same-priority queued tasks by a timestamp
+  // parsed from the task id — but in browsers the ids are random UUIDs, so the
+  // "timestamp" is 0 except for the few ids whose first segment happens to
+  // parse as a number, which get pushed behind everything else. Under load
+  // that reorders writes: typing fast into a form field could leave an older
+  // value in the document. With every timestamp 0 the (stable) sort keeps
+  // tasks in the order they were queued, which is what was intended.
+  useEffect(() => {
+    const queue = (engine as any)?.workerQueue;
+    if (queue && typeof queue.extractTime === "function") {
+      queue.extractTime = () => 0;
+    }
+  }, [engine]);
 
   // Log engine errors
   useEffect(() => {
@@ -2151,8 +3074,11 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
           // Stamps loaded from a saved PDF match the library's built-in "stamp"
           // tool, not our lazily-registered "customStamp" tool, so its
           // isRotatable: false never applied to them. Patch the built-in tool too.
+          // (The form field tools are registered by FormPluginPackage itself.)
           tools: [{ id: "stamp", interaction: { exclusive: false, isRotatable: false } }],
+          locked: FORM_FILL_LOCK,
         }),
+        createPluginRegistration(FormPluginPackage),
         createPluginRegistration(PrintPluginPackage),
       ];
     } catch (error) {
@@ -2238,6 +3164,10 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
               twoPageMode={twoPageMode}
               scrollStrategy={scrollStrategy}
               onPageChange={onPageChange}
+              enableFormFilling={enableFormFilling}
+              enableFormDesign={enableFormDesign}
+              onFormFieldSelect={onFormFieldSelect}
+              onFormStateChange={onFormStateChange}
             />
           </>
         ) : hideInternalLoading ? null : (

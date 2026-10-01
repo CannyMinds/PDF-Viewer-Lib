@@ -4,7 +4,8 @@ import { usePDFViewer } from './usePDFViewer';
 // Export types
 export type { PDFViewerInstance, PDFViewerHookReturn } from './usePDFViewer';
 export type { PDFError, PDFErrorType } from './utils/errorTypes';
-export type { PDFViewerRef, PDFViewerProps, PermissionConfig } from './PDFViewer';
+export type { PDFViewerRef, PDFViewerProps, PermissionConfig, PDFFormState, FormFieldInfo, FormFieldToolType, FormFieldKind, FormFieldOption, FormFieldDetails, FormFieldChanges, RenameFormFieldResult } from './PDFViewer';
+export { isFormFieldLabel, FORM_FIELD_LABEL_MARKER } from './PDFViewer';
 export { PdfThumbnailSidebar } from './PdfThumbnailSidebar';
 export type { PdfThumbnailSidebarProps } from './PdfThumbnailSidebar';
 
