@@ -16,14 +16,14 @@ import React, {
   useState,
   useEffect,
   useRef,
+  useMemo,
   useCallback,
   useContext,
   createContext,
   type CSSProperties,
 } from "react";
-import { EmbedPDF } from "@embedpdf/core/react";
-import { RenderLayer } from "@embedpdf/plugin-render/react";
-import { usePDFViewer } from "./usePDFViewer";
+import { DocumentScope, PageView, RenderLayer, Viewer, useDocuments } from "@embedpdf/react";
+import { createEngine, thumbnailPlugins } from "./runtime";
 
 // ---------------------------------------------------------------------------
 // Public props
@@ -246,24 +246,50 @@ interface ThumbnailLoaderProps {
   accentColor: string;
 }
 
-const ThumbnailLoader: React.FC<ThumbnailLoaderProps> = ({
-  pdfBuffer,
+const ThumbnailLoader: React.FC<ThumbnailLoaderProps> = ({ pdfBuffer, ...rest }) => {
+  // The engine takes ownership of the bytes it is opened with, so give the
+  // thumbnail instance its own copy and leave the caller's buffer intact.
+  const bytes = useMemo(
+    () => (pdfBuffer instanceof Uint8Array ? pdfBuffer.slice() : new Uint8Array(pdfBuffer).slice()),
+    [pdfBuffer],
+  );
+  const initialDocuments = useMemo(
+    () => [{ source: { kind: "bytes" as const, id: "thumbnails", bytes }, name: "thumbnails.pdf" }],
+    [bytes],
+  );
+  const centered = (
+    <div style={{ display: "flex", flexGrow: 1, alignItems: "center", justifyContent: "center", height: "100%" }}>
+      <Spinner />
+    </div>
+  );
+
+  return (
+    // key: a new buffer gets a fresh instance (<Viewer> inputs are init-only).
+    <Viewer
+      key={`${bytes.byteLength}-${bytes[0]}-${bytes[bytes.length - 1]}`}
+      engine={createEngine}
+      plugins={thumbnailPlugins}
+      initialDocuments={initialDocuments}
+      fallback={centered}
+      renderError={() => (
+        <div style={{ padding: 20, textAlign: "center", color: "#ef4444", fontSize: 13 }}>Failed to load page previews</div>
+      )}
+    >
+      <ThumbnailList {...rest} loading={centered} />
+    </Viewer>
+  );
+};
+
+const ThumbnailList: React.FC<Omit<ThumbnailLoaderProps, "pdfBuffer"> & { loading: React.ReactNode }> = ({
   totalPages,
   currentPage,
   twoPageMode,
   onPageClick,
   accentColor,
+  loading,
 }) => {
-  // Convert Uint8Array → ArrayBuffer if needed
-  const buffer: ArrayBuffer =
-    pdfBuffer instanceof Uint8Array ? pdfBuffer.buffer.slice(
-      pdfBuffer.byteOffset,
-      pdfBuffer.byteOffset + pdfBuffer.byteLength
-    ) as ArrayBuffer : pdfBuffer;
-
-  const { engine, plugins, isLoading, isReady, error } = usePDFViewer({
-    pdfBuffer: buffer,
-  });
+  const { docs } = useDocuments();
+  const doc = docs[0];
 
   // Auto-scroll active thumbnail into view
   useEffect(() => {
@@ -273,147 +299,89 @@ const ThumbnailLoader: React.FC<ThumbnailLoaderProps> = ({
     }
   }, [currentPage]);
 
-  if (isLoading || !isReady) {
+  if (doc?.status === "error") {
     return (
-      <div
-        style={{
-          display: "flex",
-          flexGrow: 1,
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-        }}
-      >
-        <Spinner />
-      </div>
+      <div style={{ padding: 20, textAlign: "center", color: "#ef4444", fontSize: 13 }}>Failed to load page previews</div>
     );
   }
+  if (!doc || doc.status !== "ready") return <>{loading}</>;
 
-  if (error) {
-    return (
-      <div
-        style={{
-          padding: 20,
-          textAlign: "center",
-          color: "#ef4444",
-          fontSize: 13,
-        }}
-      >
-        Failed to load page previews
-      </div>
-    );
+  const actualTotal = doc.pageCount || totalPages || 0;
+
+  // Build spread groups
+  const spreads: number[][] = [];
+  if (twoPageMode) {
+    for (let i = 0; i < actualTotal; i += 2) {
+      const spread: number[] = [i];
+      if (i + 1 < actualTotal) spread.push(i + 1);
+      spreads.push(spread);
+    }
+  } else {
+    for (let i = 0; i < actualTotal; i++) {
+      spreads.push([i]);
+    }
   }
 
   return (
-    <EmbedPDF engine={engine} plugins={plugins}>
-      {({ activeDocumentId, activeDocument }) => {
-        const actualTotal =
-          (activeDocument as any)?.document?.pageCount || totalPages || 0;
-        const isDocLoading = (activeDocument as any)?.status === "loading";
+    <DocumentScope id={doc.id}>
+      <div
+        style={{
+          flexGrow: 1,
+          overflowY: "auto",
+          padding: "12px 10px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 16,
+        }}
+      >
+        {spreads.map((pageIndices, spreadIdx) => {
+          const isSpreadActive = pageIndices.some((idx) => idx + 1 === currentPage);
 
-        if (isDocLoading || !activeDocumentId) {
           return (
             <div
+              key={spreadIdx}
+              id={`cm-thumb-spread-${spreadIdx}`}
               style={{
                 display: "flex",
-                flexGrow: 1,
+                flexDirection: "column",
                 alignItems: "center",
-                justifyContent: "center",
-                height: "100%",
+                width: "100%",
+                gap: 6,
+                padding: "4px",
+                borderRadius: 8,
+                border: `2px solid ${twoPageMode && isSpreadActive ? accentColor + "44" : "transparent"}`,
+                background: twoPageMode && isSpreadActive ? accentColor + "11" : "transparent",
+                transition: "all 0.18s",
               }}
             >
-              <Spinner />
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "row",
+                  justifyContent: "center",
+                  gap: twoPageMode ? 8 : 0,
+                  width: "100%",
+                }}
+              >
+                {pageIndices.map((index) => (
+                  <ThumbnailPage
+                    key={index}
+                    index={index}
+                    pageNum={index + 1}
+                    isActive={index + 1 === currentPage}
+                    twoPageMode={twoPageMode}
+                    documentId={doc.id}
+                    accentColor={accentColor}
+                    onPageClick={onPageClick}
+                  />
+                ))}
+              </div>
             </div>
           );
-        }
-
-        // Build spread groups
-        const spreads: number[][] = [];
-        if (twoPageMode) {
-          for (let i = 0; i < actualTotal; i += 2) {
-            const spread: number[] = [i];
-            if (i + 1 < actualTotal) spread.push(i + 1);
-            spreads.push(spread);
-          }
-        } else {
-          for (let i = 0; i < actualTotal; i++) {
-            spreads.push([i]);
-          }
-        }
-
-        return (
-          <div
-            style={{
-              flexGrow: 1,
-              overflowY: "auto",
-              padding: "12px 10px",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 16,
-            }}
-          >
-            {spreads.map((pageIndices, spreadIdx) => {
-              const isSpreadActive = pageIndices.some(
-                (idx) => idx + 1 === currentPage
-              );
-
-              return (
-                <div
-                  key={spreadIdx}
-                  id={`cm-thumb-spread-${spreadIdx}`}
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    width: "100%",
-                    gap: 6,
-                    padding: "4px",
-                    borderRadius: 8,
-                    border: `2px solid ${
-                      twoPageMode && isSpreadActive ? accentColor + "44" : "transparent"
-                    }`,
-                    background:
-                      twoPageMode && isSpreadActive
-                        ? accentColor + "11"
-                        : "transparent",
-                    transition: "all 0.18s",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "row",
-                      justifyContent: "center",
-                      gap: twoPageMode ? 8 : 0,
-                      width: "100%",
-                    }}
-                  >
-                    {pageIndices.map((index) => {
-                      const pageNum = index + 1;
-                      const isActive = pageNum === currentPage;
-
-                      return (
-                        <ThumbnailPage
-                          key={index}
-                          index={index}
-                          pageNum={pageNum}
-                          isActive={isActive}
-                          twoPageMode={twoPageMode}
-                          documentId={activeDocumentId}
-                          accentColor={accentColor}
-                          onPageClick={onPageClick}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        );
-      }}
-    </EmbedPDF>
+        })}
+      </div>
+    </DocumentScope>
   );
 };
 
@@ -495,12 +463,9 @@ const ThumbnailPage: React.FC<ThumbnailPageProps> = ({
       className={`pdf-viewer-thumbnail-page ${isActive ? "active" : ""}`}
     >
       <div style={canvasWrapperStyle} className="pdf-viewer-thumbnail-canvas-wrapper">
-        <RenderLayer
-          documentId={documentId}
-          pageIndex={index}
-          scale={0.25}
-          style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
-        />
+        <PageView page={index} documentId={documentId} width={150} style={{ display: "block", width: "100%", height: "100%" }}>
+          <RenderLayer />
+        </PageView>
       </div>
       <span style={labelStyle} className="pdf-viewer-thumbnail-label">{pageNum}</span>
     </div>

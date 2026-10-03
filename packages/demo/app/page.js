@@ -21,7 +21,7 @@ import {
   FormControlLabel,
   Switch,
 } from "@mui/material";
-import { PictureAsPdf, Clear, Highlight, Draw, Delete, Save, CloudUpload, Print, Lock, LockOpen, ViewSidebar } from "@mui/icons-material";
+import { PictureAsPdf, Clear, Highlight, Draw, Delete, Save, CloudUpload, Print, Lock, LockOpen, ViewSidebar, Edit, Download } from "@mui/icons-material";
 import ApprovalIcon from '@mui/icons-material/Approval';
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useDispatch, useSelector } from 'react-redux';
@@ -116,6 +116,48 @@ export default function Page() {
   // Layout mode state
   const [scrollStrategy, setScrollStrategyState] = useState('vertical'); // 'vertical' | 'horizontal'
   const [twoPageMode, setTwoPageModeState] = useState(false);
+  // Fillable form (AcroForm): fields are view-only until "Edit" is clicked
+  const [isFormEditing, setIsFormEditing] = useState(false);
+  // Form design: place new fields (fill and design are exclusive)
+  const [isFormDesigning, setIsFormDesigning] = useState(false);
+  const [activeFieldTool, setActiveFieldTool] = useState(null);
+  const [formState, setFormState] = useState({ hasFormFields: false, fieldCount: 0, isDirty: false });
+
+  const toggleFieldTool = (type) => {
+    const forms = pdfViewerRef.current?.forms;
+    if (activeFieldTool === type) {
+      forms?.deactivateFieldTool();
+      setActiveFieldTool(null);
+    } else {
+      forms?.activateFieldTool(type);
+      setActiveFieldTool(type);
+    }
+  };
+
+  // Every newly opened document starts in view mode
+  useEffect(() => {
+    setIsFormEditing(false);
+    setIsFormDesigning(false);
+    setActiveFieldTool(null);
+    setFormState({ hasFormFields: false, fieldCount: 0, isDirty: false });
+  }, [pdfBuffer]);
+
+  const handleDownloadFilledPdf = async () => {
+    const forms = pdfViewerRef.current?.forms;
+    const pdfBytes = await forms?.getFilledPdf();
+    if (!pdfBytes) {
+      setSnackbar({ open: true, message: 'Could not create the filled PDF', severity: 'error' });
+      return;
+    }
+    const url = URL.createObjectURL(new Blob([pdfBytes], { type: 'application/pdf' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = (selectedFile?.name || 'document.pdf').replace(/\.pdf$/i, '') + '-filled.pdf';
+    link.click();
+    URL.revokeObjectURL(url);
+    forms.markFormSaved();
+    setSnackbar({ open: true, message: 'Filled PDF downloaded', severity: 'success' });
+  };
   const pdfViewerRef = useRef(null);
   const lastSelectedIdRef = useRef(null);
 
@@ -1468,6 +1510,71 @@ export default function Page() {
             </Box>
           )}
 
+          {/* Form Controls — Edit enables typing into the PDF's form fields */}
+          {pdfBuffer && (
+            <Box sx={{ display: "flex", gap: 1, mb: 1, justifyContent: "center", alignItems: "center" }}>
+              <Button
+                variant={isFormEditing ? "contained" : "outlined"}
+                size="small"
+                startIcon={<Edit />}
+                disabled={!formState.hasFormFields}
+                onClick={() => {
+                  setIsFormDesigning(false);
+                  setActiveFieldTool(null);
+                  setIsFormEditing((editing) => !editing);
+                }}
+                title={formState.hasFormFields ? "Fill in the PDF's form fields" : "This PDF has no form fields"}
+              >
+                {isFormEditing ? "Done Editing" : "Edit"}
+              </Button>
+              <Button
+                variant={isFormDesigning ? "contained" : "outlined"}
+                size="small"
+                color="secondary"
+                onClick={() => {
+                  setIsFormEditing(false);
+                  setActiveFieldTool(null);
+                  setIsFormDesigning((designing) => !designing);
+                }}
+                title="Add, move and resize form fields"
+              >
+                {isFormDesigning ? "Done Adding Fields" : "Add Fields"}
+              </Button>
+              {isFormDesigning && [
+                ['text', 'Text'],
+                ['checkbox', 'Checkbox'],
+                ['radio', 'Radio'],
+                ['dropdown', 'Dropdown'],
+                ['listbox', 'List'],
+              ].map(([type, label]) => (
+                <Button
+                  key={type}
+                  size="small"
+                  variant={activeFieldTool === type ? "contained" : "text"}
+                  onClick={() => toggleFieldTool(type)}
+                  title={`Click, then click on the page to place a ${label.toLowerCase()} field`}
+                >
+                  {label}
+                </Button>
+              ))}
+              <Button
+                variant="outlined"
+                size="small"
+                color="success"
+                startIcon={<Download />}
+                disabled={!formState.isDirty}
+                onClick={handleDownloadFilledPdf}
+              >
+                Download Filled PDF
+              </Button>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                {formState.hasFormFields
+                  ? `${formState.fieldCount} form field${formState.fieldCount === 1 ? '' : 's'}${formState.isDirty ? ' · unsaved changes' : ''}`
+                  : 'No form fields'}
+              </Typography>
+            </Box>
+          )}
+
           {/* Annotation Controls */}
           {pdfBuffer && (
             <Box sx={{ display: "flex", gap: 1, mb: 1, justifyContent: "center" }}>
@@ -1849,6 +1956,9 @@ export default function Page() {
                   scrollStrategy={scrollStrategy === 'horizontal' ? ScrollStrategy.Horizontal : ScrollStrategy.Vertical}
                   twoPageMode={twoPageMode}
                   onPageChange={(page) => setPdfCurrentPage(page)}
+                  enableFormFilling={isFormEditing}
+                  enableFormDesign={isFormDesigning}
+                  onFormStateChange={setFormState}
                   userDetails={{
                     name: currentUser.author,
                     email: currentUser.email,

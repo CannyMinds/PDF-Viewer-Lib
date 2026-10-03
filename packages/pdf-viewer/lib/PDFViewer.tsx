@@ -1,2258 +1,419 @@
-import { EmbedPDF, useDocumentState, usePlugin } from "@embedpdf/core/react";
-// FilePicker moved to plugin-document-manager in v2.x
+import * as React from "react";
 import {
-  Viewport,
-  ViewportPluginPackage,
-} from "@embedpdf/plugin-viewport/react";
-import {
-  Scroller,
-  ScrollPluginPackage,
-  ScrollStrategy,
-  useScrollPlugin,
-} from "@embedpdf/plugin-scroll/react";
-import {
-  RenderLayer,
-  RenderPluginPackage,
-} from "@embedpdf/plugin-render/react";
-import { SelectionLayer, useSelectionCapability, SelectionPluginPackage } from "@embedpdf/plugin-selection/react";
-import { SearchLayer } from "@embedpdf/plugin-search/react";
-import {
-  InteractionManagerPluginPackage,
-  PagePointerProvider,
-  GlobalPointerProvider,
-} from "@embedpdf/plugin-interaction-manager/react";
-import { useZoom, ZoomMode, ZoomPluginPackage } from "@embedpdf/plugin-zoom/react";
-import { useSearch } from "@embedpdf/plugin-search/react";
-import { useScroll } from "@embedpdf/plugin-scroll/react";
-import { useRotate, Rotate, RotatePluginPackage } from "@embedpdf/plugin-rotate/react";
-import {
-  useAnnotationCapability,
-  AnnotationLayer,
-  AnnotationPluginPackage,
-} from "@embedpdf/plugin-annotation/react";
-import { usePrintCapability, PrintPluginPackage } from "@embedpdf/plugin-print/react";
-import { PdfAnnotationSubtype, PdfErrorCode } from "@embedpdf/models";
-import { HistoryPluginPackage } from "@embedpdf/plugin-history";
-import { Rotation } from "@embedpdf/models";
-
-// v2.14.1 — annotation plugin (gated; needs full plugin migration from 1.3.x)
-// TODO(plugin-migration): wire AnnotationPluginPackage in createPluginRegistration list,
-// and replace the `annotationCap as any` casts below with `useAnnotationCapability().provides`.
-// See packages/plugin-annotation/src/lib/types.ts (AnnotationCapability) in embed-pdf-viewer-main.
-// import {
-//   useAnnotationCapability,
-//   AnnotationPluginPackage,
-// } from "@embedpdf/plugin-annotation/react";
-import type { LockMode } from "./lock-types";
-import type { PdfAnnotationObject } from "@embedpdf/models";
-
-// Re-export for consuming apps
-export { ZoomMode, Rotation, usePrintCapability };
-export type { SearchState } from "@embedpdf/plugin-search";
-export type { SearchResult, SearchAllPagesResult, MatchFlag } from "@embedpdf/models";
-
-// Import types for internal use
-import type { SearchAllPagesResult } from "@embedpdf/models";
-import type { SearchState } from "@embedpdf/plugin-search";
-
-import {
-  useEffect,
-  useLayoutEffect,
-  useImperativeHandle,
   forwardRef,
-  useMemo,
   useCallback,
-  type ReactElement,
-  useState,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
   useRef,
-  type CSSProperties,
+  useState,
+  type ReactElement,
 } from "react";
-
-
-import { usePdfiumEngine } from "@embedpdf/engines/react";
-import { createPluginRegistration, BasePlugin } from "@embedpdf/core";
-import { AnnotationFloatingToolbar } from "./components/AnnotationFloatingToolbar";
-import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapability } from "@embedpdf/plugin-document-manager/react";
-// SelectionPluginPackage now imported from react subpath (includes CopyToClipboard utility)
-import { SearchPluginPackage } from "@embedpdf/plugin-search";
-
-// ---------------------------------------------------------------------------
-// Patch @embedpdf/plugin-scroll package's HorizontalScrollStrategy prototype to fix layout & navigation bugs in horizontal scrolling mode.
-// ---------------------------------------------------------------------------
-if (ScrollPluginPackage && typeof ScrollPluginPackage.create === 'function') {
-  const originalScrollPluginCreate = ScrollPluginPackage.create;
-  ScrollPluginPackage.create = function(registry: any, config: any) {
-    const pluginInstance = originalScrollPluginCreate.call(this, registry, config);
-    
-    if (pluginInstance && typeof (pluginInstance as any).createStrategy === 'function') {
-      const originalCreateStrategy = (pluginInstance as any).createStrategy;
-      (pluginInstance as any).createStrategy = function(strategyType: any) {
-        const strategy = originalCreateStrategy.call(this, strategyType);
-        if (strategy) {
-          const proto = Object.getPrototypeOf(strategy);
-          if (proto && !proto.__isPatched) {
-            proto.__isPatched = true;
-            
-            // 1. Patch getRectLocationForPage: Fix horizontal centering offset bug
-            const originalGetRectLocation = proto.getRectLocationForPage;
-            proto.getRectLocationForPage = function(pageNumber: number, virtualItems: any[], totalContentSize: any) {
-              const isHorizontal = this.constructor.name === 'HorizontalScrollStrategy';
-              if (isHorizontal) {
-                const item = virtualItems.find((item2) => item2.pageNumbers.includes(pageNumber));
-                if (!item) return null;
-                const pageLayout = item.pageLayouts.find((layout: any) => layout.pageNumber === pageNumber);
-                if (!pageLayout) return null;
-                
-                let centeringOffsetY = 0;
-                if (totalContentSize) {
-                  const maxHeight = totalContentSize.height;
-                  if (item.height < maxHeight) {
-                    centeringOffsetY = (maxHeight - item.height) / 2;
-                  }
-                }
-                return {
-                  origin: {
-                    x: item.x + pageLayout.x,
-                    y: item.y + pageLayout.y + centeringOffsetY
-                  },
-                  size: {
-                    width: pageLayout.width,
-                    height: pageLayout.height
-                  }
-                };
-              }
-              return originalGetRectLocation.call(this, pageNumber, virtualItems, totalContentSize);
-            };
-
-            // 2. Patch getVisibleRange: Fix horizontal range calculation using height instead of width
-            const originalGetVisibleRange = proto.getVisibleRange;
-            proto.getVisibleRange = function(viewport: any, virtualItems: any[], scale: number) {
-              const isHorizontal = this.constructor.name === 'HorizontalScrollStrategy';
-              if (isHorizontal) {
-                const scrollOffset = this.getScrollOffset(viewport);
-                const clientSize = this.getClientSize(viewport);
-                const viewportStart = scrollOffset;
-                const viewportEnd = scrollOffset + clientSize;
-                
-                let startIndex = 0;
-                while (startIndex < virtualItems.length) {
-                  const item = virtualItems[startIndex];
-                  if ((item.offset + item.width) * scale > viewportStart) {
-                    break;
-                  }
-                  startIndex++;
-                }
-                
-                let endIndex = startIndex;
-                while (endIndex < virtualItems.length) {
-                  const item = virtualItems[endIndex];
-                  if (item.offset * scale > viewportEnd) {
-                    break;
-                  }
-                  endIndex++;
-                }
-                
-                return {
-                  start: Math.max(0, startIndex - this.bufferSize),
-                  end: Math.min(virtualItems.length - 1, endIndex + this.bufferSize - 1)
-                };
-              }
-              return originalGetVisibleRange.call(this, viewport, virtualItems, scale);
-            };
-          }
-        }
-        return strategy;
-      };
-    }
-    
-    return pluginInstance;
-  };
-}
-
-// ---------------------------------------------------------------------------
-// SpreadPlugin — custom plugin to natively support page pairing (spreads)
-// in @embedpdf's scroll plugin.
-// ---------------------------------------------------------------------------
-class SpreadPlugin extends BasePlugin {
-  static id = "spread";
-  private twoPageMode = false;
-  private listeners: Set<(event: { documentId: string }) => void> = new Set();
-
-  constructor(id: string, registry: any) {
-    super(id, registry);
-  }
-
-  async initialize(): Promise<void> {
-    // No-op custom initialization
-  }
-
-  setTwoPageMode(enabled: boolean, documentId: string) {
-    if (this.twoPageMode !== enabled) {
-      this.twoPageMode = enabled;
-      this.listeners.forEach((listener) => {
-        try {
-          listener({ documentId });
-        } catch (e) {
-          console.error('[SpreadPlugin] Error invoking spread listener:', e);
-        }
-      });
-    }
-  }
-
-  getTwoPageMode() {
-    return this.twoPageMode;
-  }
-
-  buildCapability() {
-    return {
-      forDocument: (documentId: string) => ({
-        getSpreadPages: () => {
-          const coreDoc = (this as any).coreState?.core?.documents?.[documentId];
-          const pages = coreDoc?.document?.pages || [];
-          if (!pages.length) return [];
-          
-          if (!this.twoPageMode) {
-            return pages.map((page: any) => [page]);
-          }
-          
-          // Group into pairs
-          const spreads: any[][] = [];
-          for (let i = 0; i < pages.length; i += 2) {
-            const pair = [pages[i]];
-            if (i + 1 < pages.length) pair.push(pages[i + 1]);
-            spreads.push(pair);
-          }
-          return spreads;
-        }
-      }),
-      onSpreadChange: (callback: (event: { documentId: string }) => void) => {
-        this.listeners.add(callback);
-        return () => {
-          this.listeners.delete(callback);
-        };
-      }
-    };
-  }
-}
-
-const SpreadPluginPackage = {
-  manifest: {
-    id: "spread",
-    name: "Spread Plugin",
-    version: "1.0.0",
-    provides: ["spread"],
-    requires: [],
-    optional: [],
-    defaultConfig: {},
-  },
-  create: (registry: any) => new SpreadPlugin("spread", registry),
-  reducer: (state: any = null, action: any) => state,
-  initialState: (coreState: any) => null,
-};
-
-const useSpreadPlugin = () => usePlugin("spread");
-// ---------------------------------------------------------------------------
-
-type AnnotationSelectionMenu = (props: {
-  annotation: any;
-  selected: boolean;
-  rect: any;
-  menuWrapperProps: {
-    style?: CSSProperties;
-    [key: string]: any;
-  };
-}) => ReactElement;
-
-// Import extracted components and utilities
 import {
-  loadImageDimensions,
-  useStampTool,
-  createAnnotationAPI,
-} from "./components";
+  AnnotationLayer,
+  DocumentGate,
+  DocumentScope,
+  FormLayer,
+  RenderLayer,
+  SearchLayer,
+  SelectionLayer,
+  Stage,
+  StageToken,
+  Viewer,
+  usePage,
+  useCapability,
+  useDocuments,
+  useKernel,
+} from "@embedpdf/react";
+import type { StageCapability } from "@embedpdf/react";
+import { Rotation, ScrollStrategy, ZoomMode, degreesToRotation, rotationToDegrees } from "./compat";
+import { createAnnotationApi } from "./api/annotationApi";
+import type { ClickToPlaceData } from "./api/annotationApi";
+import { createDocumentApi } from "./api/documentApi";
+import { createSearchApi } from "./api/searchApi";
+import { createSelectionApi } from "./api/selectionApi";
+import { createFormsApi } from "./api/formsApi";
+import { AnnotationHub } from "./annotations/hub";
+import { FormsController } from "./forms/controller";
+import { AnnotationDeleteMenu } from "./components/AnnotationDeleteMenu";
+import { PasswordGate } from "./components/PasswordGate";
+import { LockModeType } from "./lock-types";
+import type { LockMode } from "./lock-types";
+import { createEngine, viewerPlugins } from "./runtime";
+import type { PDFViewerProps, PDFViewerRef, PermissionConfig } from "./types/public";
 
-/**
- * Permission configuration for controlling PDF features.
- * Allows overriding document permissions for annotations, printing, etc.
- */
-export interface PermissionConfig {
-  /**
-   * When true (default): use PDF's permissions as the base, then apply overrides.
-   * When false: treat document as having all permissions allowed, then apply overrides.
-   */
-  enforceDocumentPermissions?: boolean;
+export type {
+  AnnotationSelectionMenu,
+  FormFieldChanges,
+  FormFieldDetails,
+  FormFieldInfo,
+  FormFieldKind,
+  FormFieldOption,
+  FormFieldToolType,
+  PDFFormState,
+  PDFViewerProps,
+  PDFViewerRef,
+  PermissionConfig,
+  RenameFormFieldResult,
+  SearchAllPagesResult,
+  SearchResult,
+  SearchState,
+} from "./types/public";
+export { FORM_FIELD_LABEL_MARKER, isFormFieldLabel } from "./forms/labels";
+export { ZoomMode, Rotation };
 
-  /**
-   * Explicit per-flag overrides.
-   * - true = force allow (even if PDF denies)
-   * - false = force deny (even if PDF allows)
-   * - undefined = use base permissions
-   */
-  overrides?: {
-    /** Allow/deny printing */
-    print?: boolean;
-    /** Allow/deny modifying document contents */
-    modifyContents?: boolean;
-    /** Allow/deny copying/extracting text */
-    copyContents?: boolean;
-    /** Allow/deny modifying annotations (create/update/delete) */
-    modifyAnnotations?: boolean;
-    /** Allow/deny filling forms */
-    fillForms?: boolean;
-    /** Allow/deny extraction for accessibility */
-    extractForAccessibility?: boolean;
-    /** Allow/deny assembling document (insert, rotate, delete pages) */
-    assembleDocument?: boolean;
-    /** Allow/deny high quality print */
-    printHighQuality?: boolean;
-  };
-}
+let documentSeq = 0;
 
-export interface PDFViewerProps {
-  pdfBuffer: Uint8Array | null;
-  password?: string;
-  enableAnnotations?: boolean;
-  userDetails?: {
-    name?: string;
-    email?: string;
-    id?: string;
-  };
-  className?: string;
-  style?: React.CSSProperties;
-  /**
-   * Callback when a password is required to open the document.
-   * @param fileName - The name of the file being opened
-   * @param isRetry - True if this is a retry after an incorrect password was entered
-   */
-  onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null>;
-  /**
-   * Callback when the document loads with page count information.
-   * @param info - Object containing totalPages and other document info
-   */
-  onDocumentLoad?: (info: { totalPages: number; currentPage: number }) => void;
-  annotationSelectionMenu?: AnnotationSelectionMenu;
-  /**
-   * Permission configuration for controlling PDF features.
-   * Use to override document restrictions for testing or specific use cases.
-   */
-  permissions?: PermissionConfig;
-  /**
-   * Whether to hide the default internal loading UI.
-   * Useful when using a custom external loading indicator.
-   */
-  hideInternalLoading?: boolean;
-  twoPageMode?: boolean | undefined;
-  scrollStrategy?: ScrollStrategy | undefined;
-  onPageChange?: ((page: number) => void) | undefined;
-}
+const centered = (content: React.ReactNode): ReactElement => (
+  <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", backgroundColor: "#f5f5f5" }}>
+    <div style={{ textAlign: "center" }}>{content}</div>
+  </div>
+);
 
-export interface PDFViewerRef {
-  zoom: {
-    zoomIn: () => void;
-    zoomOut: () => void;
-    setZoom: (level: number) => void;
-    resetZoom: () => void;
-    getZoom: () => number | ZoomMode;
-    fitToWidth: () => void;
-    fitToPage: () => void;
-  };
-  navigation: {
-    goToPage: (page: number) => void;
-    getCurrentPage: () => number;
-    getTotalPages: () => number;
-    nextPage: () => void;
-    previousPage: () => void;
-    goToFirstPage: () => void;
-    goToLastPage: () => void;
-    setScrollStrategy: (strategy: ScrollStrategy) => void;
-    getLayout: () => any;
-    setTwoPageMode: (enabled: boolean) => void;
-    getTwoPageMode: () => boolean;
-    onPageChange: (listener: (event: any) => void) => () => void;
-  };
-  selection: {
-    clearSelection: () => void;
-    getSelectedText: () => Promise<string>;
-    copy: () => void;
-  };
-  search: {
-    searchText: (keyword: string) => Promise<SearchAllPagesResult | null>;
-    nextResult: () => number;
-    previousResult: () => number;
-    goToResult: (index: number) => number;
-    stopSearch: () => void;
-    startSearch: () => void;
-    getSearchState: () => SearchState | null;
-    setShowAllResults: (show: boolean) => void;
-  };
-  document: {
-    isReady: () => boolean;
-    isLoading: () => boolean;
-    hasPassword: () => boolean;
-    getDocumentInfo: () => {
-      currentPage: number;
-      totalPages: number;
-      zoomLevel: number | ZoomMode;
-      hasActiveSearch: boolean;
-    };
-  };
-  scroll: {
-    scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => void;
-  };
-  rotate: {
-    rotateForward: () => void;
-    rotateBackward: () => void;
-    setRotation: (rotation: Rotation) => void;
-    getRotation: () => Rotation;
-  };
-  /**
-   * Annotation namespace — v2.14.1 surface.
-   *
-   * Tool activation (highlighter / stamp / signature) and CRUD methods come from
-   * @embedpdf/plugin-annotation. The lock predicates below let consumers ask the
-   * engine whether an annotation is interactive / structurally locked / content
-   * locked, instead of re-deriving from the flag array.
-   *
-   * Consumers express per-user permission by stamping `flags` at import time:
-   *   ['readOnly']                 → fully non-interactive (no select/edit/delete)
-   *   ['locked', 'lockedContents'] → selectable + deletable, but immovable + content frozen
-   *   ['hidden'] | ['noView']      → not rendered at all
-   *
-   * Document-level: `setLocked({ type: LockModeType.All })` blocks creation of
-   * new annotations entirely, including via keyboard shortcuts.
-   */
-  annotation: {
-    activateHighlighter: () => void;
-    deactivateHighlighter: () => void;
-    isHighlighterActive: () => boolean;
-    activateStamp: (imageDataUrl?: string) => void;
-    deactivateStamp: () => void;
-    isStampActive: () => boolean;
-    activateSignature: () => void;
-    deactivateSignature: () => void;
-    isSignatureActive: () => boolean;
-    addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: { author?: string; customData?: any }) => boolean;
-    addSignatureAnnotation: (signatureDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number) => boolean;
-    deleteSelectedAnnotation: () => boolean;
-    /** Deletes a specific annotation by id, regardless of current selection —
-     * unlike deleteSelectedAnnotation, works uniformly across every
-     * annotation type (stamp, highlight, ink/signature, note) without
-     * relying on selection/interactivity state. */
-    deleteAnnotationById: (pageIndex: number, annotationId: string) => boolean;
-    /** Deletes multiple annotations in one commit — deleteAnnotationById calls
-     * commit() per item, and since commit() is async and lock-guarded
-     * underneath, back-to-back calls can find the lock already held by an
-     * earlier in-flight commit and silently no-op instead of actually
-     * waiting, dropping later deletes. This stages every deletion first and
-     * commits exactly once. */
-    deleteAnnotationsById: (items: Array<{ pageIndex: number; annotationId: string }>) => Promise<boolean>;
-    getSelectedAnnotation: () => PdfAnnotationObject | null;
-    getSelectedAnnotationDetails: () => any;
-    getAllAnnotations: () => PdfAnnotationObject[];
-    getAllAnnotationsWithMetadata: () => PdfAnnotationObject[];
-    exportAnnotationsAsJSON: () => string;
-    onAnnotationEvent: (callback: (event: any) => void) => (() => void) | null;
-    updateAnnotation: (pageIndex: number, annotationId: string, updates: Record<string, any>) => boolean;
-    selectAnnotation: (pageIndex: number, annotationId: string | null) => boolean;
-    importAnnotations: (annotations: Array<{ pageIndex: number; annotation: Record<string, any> }>) => Promise<{ success: number; failed: number }>;
-    onStateChange: (callback: (state: any) => void) => (() => void) | null;
-    enableClickToPlace: (callback: (clickData: { pageIndex: number; x: number; y: number; pageWidth?: number; pageHeight?: number }) => void) => void;
-    placeStampAtPosition: (imageDataUrl: string, pageIndex: number, x: number, y: number) => void;
-
-    // v2.14.1 lock predicates — engine-enforced
-    /** False if `noView | hidden | readOnly` flags or category-locked. */
-    isAnnotationInteractive: (annotation: PdfAnnotationObject) => boolean;
-    /** True if non-interactive OR has `locked` flag (move/resize/rotate frozen). */
-    isAnnotationStructurallyLocked: (annotation: PdfAnnotationObject) => boolean;
-    /** True if non-interactive OR has `lockedContents` flag (e.g. FreeText text frozen). */
-    isAnnotationContentLocked: (annotation: PdfAnnotationObject) => boolean;
-
-    // v2.14.1 document-level lock mode
-    setLocked: (mode: LockMode) => void;
-    getLocked: () => LockMode;
-  };
-  download: {
-    downloadWithAnnotations: (filename?: string) => Promise<void>;
-    downloadWithoutAnnotations: (filename?: string) => Promise<void>;
-  };
-  print: {
-    printWithAnnotations: () => Promise<void>;
-    printWithoutAnnotations: () => Promise<void>;
-  };
-}
-
-// Helper component to handle password logic without side-effects in render
-const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { documentState: any; documentId: string; onPasswordRequest?: (fileName?: string, isRetry?: boolean) => Promise<string | null> }) => {
-  const { provides } = useDocumentManagerCapability();
-  const isHandlingPasswordRef = useRef<boolean>(false);
-  const hasHandledInitialRef = useRef<boolean>(false);
-
-  // Helper function to prompt for password and retry
-  const promptAndRetry = useCallback((fileName: string, isRetry: boolean) => {
-    if (!provides || !onPasswordRequest) return;
-
-    isHandlingPasswordRef.current = true;
-    console.log(`[PasswordLogic] ${isRetry ? 'Wrong password, prompting again' : 'Password required'} for:`, fileName);
-
-    onPasswordRequest(fileName, isRetry).then(password => {
-      if (password) {
-        console.log('[PasswordLogic] Attempting with password...');
-        const task = provides.retryDocument(documentId, { password });
-
-        // Use the Task's wait method to detect success/failure
-        task.wait(
-          // Success callback
-          () => {
-            console.log('[PasswordLogic] Password accepted!');
-            isHandlingPasswordRef.current = false;
-            hasHandledInitialRef.current = false;
-          },
-          // Error callback - wrong password, prompt again
-          (error: any) => {
-            console.log('[PasswordLogic] Password rejected, error:', error);
-            isHandlingPasswordRef.current = false;
-            // Recursively prompt again
-            promptAndRetry(fileName, true);
-          }
-        );
-      } else {
-        console.log('[PasswordLogic] No password provided (cancelled)');
-        isHandlingPasswordRef.current = false;
-      }
-    });
-  }, [provides, onPasswordRequest, documentId]);
-
-  useEffect(() => {
-    if (!documentState || !onPasswordRequest || !provides) return;
-
-    // Only process if errorCode is Password or isEncrypted is true
-    // Cast to any since isEncrypted is a new property in @embedpdf/models@2.2.0
-    if (documentState.errorCode !== PdfErrorCode.Password && !(documentState as any).isEncrypted) {
-      hasHandledInitialRef.current = false;
-      isHandlingPasswordRef.current = false;
-      return;
-    }
-
-    // Skip if we're already handling a password prompt
-    if (isHandlingPasswordRef.current) {
-      return;
-    }
-
-    // Only handle the initial password request here
-    // Subsequent retries are handled by the task.wait() error callback
-    if (!hasHandledInitialRef.current && !documentState.passwordProvided) {
-      hasHandledInitialRef.current = true;
-      promptAndRetry(documentState.name, false);
-    } else if (!hasHandledInitialRef.current && documentState.passwordProvided) {
-      // This catches the case where the component re-renders with a wrong password state
-      hasHandledInitialRef.current = true;
-      promptAndRetry(documentState.name, true);
-    }
-  }, [documentState?.errorCode, documentState?.passwordProvided, documentId, onPasswordRequest, provides, promptAndRetry]);
-
-  return null;
+// The `permissions` prop in terms of the engine's capability scope. Without it
+// the document is fully permitted, as before. With it, a capability is granted
+// unless an override denies it.
+//
+// Annotation writes are always granted at engine level: showing the annotations a
+// host stores for the document means creating them here, and the host also sets
+// their lock flags afterwards. `modifyAnnotations: false` is enforced by the viewer
+// instead (no drawing tools, no deleting) — see `denyAnnotationEdits`.
+const scopeFor = (permissions: PermissionConfig | undefined): string[] => {
+  if (!permissions) return ["*"];
+  const o = permissions.overrides ?? {};
+  const allow = (flag: boolean | undefined) => flag !== false;
+  const scope = ["doc.open", "doc.render", "doc.text.search", "doc.text.select", "doc.annotate.read", "doc.forms.read", "doc.download", "doc.download.flattened"];
+  if (allow(o.print)) scope.push("doc.print");
+  if (allow(o.printHighQuality) && allow(o.print)) scope.push("doc.print.high");
+  if (allow(o.copyContents)) scope.push("doc.text.copy", "doc.content.copy");
+  scope.push("doc.annotate.modify");
+  if (allow(o.fillForms)) scope.push("doc.forms.fill");
+  if (allow(o.modifyContents)) scope.push("doc.forms.modify");
+  if (allow(o.assembleDocument)) scope.push("doc.pages.modify", "doc.pages.assemble");
+  return scope;
 };
 
-/**
- * PDF's `/F` annotation flags bitfield includes a spec-defined "Print" bit
- * (value 4): "If set, print the annotation when the page is printed... If
- * clear, never print the annotation, regardless of whether it is displayed
- * on the screen" (PDF spec, Table 165). This is the actual root cause behind
- * a highlight (or any annotation) rendering correctly on screen and surviving
- * `downloadWithAnnotations` (which just serializes the annotation as-is —
- * nothing there inspects the Print bit) while silently vanishing from every
- * real print operation, `printWithAnnotations` included: any spec-compliant
- * print pipeline — including @embedpdf/plugin-print's own `preparePrintDocument`
- * (PDFium's `FPDF_ImportPages`, which does carry annotations and their flags
- * across correctly — that was never the actual problem) — correctly omits an
- * annotation whose Print bit is clear.
- *
- * `@embedpdf/engines`' native content-writer only defaults *new* STAMP
- * annotations to `annotation.flags || ['print', 'noZoom', 'noRotate']`
- * (its `addStampContent`) — there is no equivalent fallback for the
- * text-markup family (Highlight/Underline/StrikeOut/Squiggly, via
- * `addTextMarkupContent`), and that fallback only triggers when `flags` is
- * missing entirely, not when it's an empty array (`[]` is truthy in JS, so
- * `annotation.flags && setAnnotationFlags(...)` still fires and writes zero
- * bits — Print included). Once any caller (a consuming app's own flag
- * management, e.g. computing engine-enforced read-only/locked flags from
- * permissions, is a completely reasonable thing to do) writes a `flags`
- * array via `updateAnnotation` without separately re-adding 'print', the
- * Print bit silently stays or becomes cleared with no path back.
- *
- * Since `updateAnnotation` (below) is the single choke point every
- * flags-bearing patch — from any consumer, for any reason — passes through,
- * this guarantees 'print' survives by default unless the annotation is
- * being made invisible anyway ('hidden' / 'noView'), in which case whether
- * it would print is moot.
- */
-const ensurePrintableFlags = (flags: unknown): unknown => {
-  if (!Array.isArray(flags)) return flags;
-  if (flags.includes('hidden') || flags.includes('noView')) return flags;
-  if (flags.includes('print')) return flags;
-  return [...flags, 'print'];
-};
-
-// Internal component that has access to plugin hooks
-// ... (PDFContent definition continues)
-const PDFContent = forwardRef<PDFViewerRef, {
-  isReady: boolean;
-  isLoading: boolean;
-  hasPassword: boolean;
-  annotationSelectionMenu?: AnnotationSelectionMenu;
-  pdfBuffer?: Uint8Array | null;
-  engine: any;
-  documentId: string;
-  userDetails?: { name?: string; email?: string; id?: string;[key: string]: any };
-  onPasswordRequest?: (fileName?: string) => Promise<string | null>;
-  hideInternalLoading?: boolean;
-  twoPageMode?: boolean | undefined;
-  scrollStrategy?: ScrollStrategy | undefined;
-  onPageChange?: ((page: number) => void) | undefined;
-}>(({
-  isReady,
-  isLoading,
-  hasPassword,
-  annotationSelectionMenu,
-  pdfBuffer,
-  engine,
-  documentId,
-  userDetails,
-  onPasswordRequest,
-  hideInternalLoading,
-  twoPageMode,
-  scrollStrategy,
-  onPageChange
-}, ref) => {
-  // v2.x hooks now require documentId for multi-document support
-  const zoom = useZoom(documentId);
-  const search = useSearch(documentId);
-  const scroll = useScroll(documentId);
-  const rotate = useRotate(documentId);
-  const annotation = useAnnotationCapability();
-  const print = usePrintCapability();
-  const documentManager = useDocumentManagerCapability(); // documentManager capability used in PasswordLogic
-  const selection = useSelectionCapability();
-  const docState = useDocumentState(documentId);
-  const { plugin: spreadPlugin } = useSpreadPlugin() as any;
-
-  // Track annotations with metadata
-  const [annotationsMetadata, setAnnotationsMetadata] = useState<Map<string, any>>(new Map());
-
-  // Track verified totalPages from onLayoutReady event
-  // The useScroll hook initializes totalPages to 1, so we need to track when we get the real value
-  const [verifiedTotalPages, setVerifiedTotalPages] = useState<number>(0);
-
-  // Use a ref to store the latest verifiedTotalPages for use in useImperativeHandle
-  // This avoids stale closure issues where the function captures an old value
-  const verifiedTotalPagesRef = useRef<number>(0);
-
-  // Keep ref in sync with state
-  useEffect(() => {
-    verifiedTotalPagesRef.current = verifiedTotalPages;
-  }, [verifiedTotalPages]);
-
-  // Apply two-page mode and scroll strategy from props inside the document context
-  useEffect(() => {
-    if (spreadPlugin && twoPageMode !== undefined) {
-      spreadPlugin.setTwoPageMode(twoPageMode, documentId);
-    }
-  }, [spreadPlugin, twoPageMode, documentId]);
-
-  useEffect(() => {
-    if (scroll.provides && scrollStrategy !== undefined) {
-      scroll.provides.setScrollStrategy(scrollStrategy);
-    }
-  }, [scrollStrategy, scroll.provides]);
-
-  // Subscribe to page changes from scrolling inside the document context
-  useEffect(() => {
-    if (!scroll.provides || !onPageChange) return;
-    const unsubscribe = scroll.provides.onPageChange((event) => {
-      if (event?.pageNumber) {
-        onPageChange(event.pageNumber);
-      }
-    });
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
-  }, [scroll.provides, onPageChange]);
-
-  // Track pending stamp image for placement
-  // Track click-to-place callback
-  const clickToPlaceCallbackRef = useRef<((clickData: { pageIndex: number; x: number; y: number; pageWidth?: number; pageHeight?: number; target?: HTMLElement | EventTarget }) => void) | null>(null);
-  const customStampToolIdRef = useRef<string | null>(null);
-  const stampSizeCacheRef = useRef<Map<string, { width: number; height: number }>>(new Map());
-  const currentUserInfoRef = useRef<{ author?: string; customData?: any } | null>(null);
-  const [annotationRenderVersion, setAnnotationRenderVersion] = useState(0);
-
-  useEffect(() => {
-    customStampToolIdRef.current = null;
-    stampSizeCacheRef.current.clear();
-    if (annotation.provides) {
-      annotation.provides.setActiveTool(null);
-    }
-  }, [pdfBuffer]);
-
-  // Annotations already baked into a freshly-opened PDF are added to plugin
-  // state in bulk during document load — unlike interactively-placed ones,
-  // no 'create' event fires for them. Tools that paint via the JS layer
-  // instead of a native appearance stream (e.g. the built-in "stamp" tool —
-  // see its useAppearanceStream: false) render their visible content by
-  // asynchronously rasterizing the annotation through the engine
-  // (RenderAnnotation in @embedpdf/plugin-annotation's react bindings) and
-  // swallow any failure silently (`.wait(onSuccess, ignore)` — ignore is a
-  // literal no-op from @embedpdf/models). If that first rasterize races the
-  // engine/page not being fully ready yet right after document load, the
-  // annotation is left permanently blank — only its selection/hover chrome
-  // (border, delete button) still works, since that's a separate layer.
-  // Selecting the annotation happens to remount it and retry, which is why
-  // clicking makes it appear. Force the same remount (already used
-  // elsewhere in this file after importAnnotations()/stamp activation)
-  // ourselves once loaded annotations appear, and again after a short delay
-  // as a retry in case that first forced attempt hit the same race.
-  useEffect(() => {
-    const provides = annotation.provides as any;
-    if (!provides?.onStateChange) return undefined;
-
-    let fired = false;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    const checkAndFire = () => {
-      if (fired) return;
-      const docState = provides.getState?.();
-      const hasAnnotations = docState?.byUid && Object.keys(docState.byUid).length > 0;
-      if (!hasAnnotations) return;
-      fired = true;
-      setAnnotationRenderVersion((v) => v + 1);
-      retryTimer = setTimeout(() => setAnnotationRenderVersion((v) => v + 1), 500);
-    };
-
-    const unsubscribe = provides.onStateChange(checkAndFire);
-    checkAndFire(); // covers the case where annotations are already loaded by the time we subscribe
-
-    return () => {
-      unsubscribe?.();
-      if (retryTimer) clearTimeout(retryTimer);
-    };
-  }, [annotation.provides, documentId]);
-
-  // Update user info ref when userDetails change
-  useEffect(() => {
-    if (userDetails) {
-      currentUserInfoRef.current = {
-        author: userDetails.name || userDetails.email || 'Guest',
-        customData: userDetails
-      };
-    }
-  }, [userDetails]);
-
-  // Guarantee every newly-created annotation is printable by default (see
-  // ensurePrintableFlags' doc comment above the component). Catches the case
-  // before any app-level flags-management call (e.g. a consumer computing
-  // engine-enforced read-only/locked flags from its own permission model, or
-  // this component's own note-placement locking just below) ever runs — so
-  // even an unsaved draft downloads/prints correctly, not just saved ones.
-  useEffect(() => {
-    if (!annotation.provides?.onAnnotationEvent) return undefined;
-
-    const unsubscribe = annotation.provides.onAnnotationEvent((event: any) => {
-      if (event?.type !== 'create' || event?.committed === false) return;
-      const ann = event.annotation;
-      if (!ann?.id) return;
-
-      const currentFlags = Array.isArray(ann.flags) ? ann.flags : [];
-      const patched = ensurePrintableFlags(currentFlags) as string[];
-      if (patched === currentFlags) return; // already printable, or deliberately hidden
-
-      const api = annotation.provides as any;
-      if (typeof api?.updateAnnotation !== 'function') return;
-      api.updateAnnotation(ann.pageIndex, ann.id, { flags: patched });
-      if (typeof api.commit === 'function') {
-        api.commit();
-      }
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, [annotation.provides]);
-
-  // Handle Ctrl+C for copying selected text
-  useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      // Check for Ctrl+C or Cmd+C (Mac)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (selection.provides) {
-          try {
-            const textArray = await selection.provides.getSelectedText().toPromise();
-            const text = textArray.join(' ');
-            if (text && text.trim()) {
-              await navigator.clipboard.writeText(text);
-              console.log('Text copied to clipboard:', text);
-            }
-          } catch (err) {
-            console.error('Failed to copy text:', err);
-          }
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [selection]);
-
-  // Subscribe to onLayoutReady event to get verified totalPages
-  // The useScroll hook initializes totalPages to 1 before the document loads,
-  // so we need to listen to onLayoutReady which fires with the correct value
-  useEffect(() => {
-    // Reset verified total pages when document changes
-    setVerifiedTotalPages(0);
-
-    // Access the scroll capability directly for onLayoutReady subscription
-    const scrollCapability = scroll.provides;
-    if (!scrollCapability) return;
-
-    // Track if we've found the total to avoid stale closure issues
-    let foundTotal = false;
-
-    // Try to get totalPages from scroll.provides.getTotalPages() or scroll.state.totalPages
-    // after the document is loaded
-    const checkTotalPages = () => {
-      if (foundTotal) return; // Already found, skip
-
-      // First try scroll.provides.getTotalPages() if it exists
-      if (scrollCapability && typeof (scrollCapability as any).getTotalPages === 'function') {
-        const total = (scrollCapability as any).getTotalPages();
-        if (total > 0) {
-          console.log('[PDFContent] Got verified totalPages from scroll capability:', total);
-          setVerifiedTotalPages(total);
-          foundTotal = true; // Mark as found to stop further polling
-          return;
-        }
-      }
-
-      // Fallback: check scroll.state.totalPages
-      // The scroll state initializes totalPages to 1, so we accept any value > 1
-      // OR any value that comes from the document after it's been fully loaded
-      if (scroll.state && scroll.state.totalPages > 1) {
-        console.log('[PDFContent] Got verified totalPages from scroll state:', scroll.state.totalPages);
-        setVerifiedTotalPages(scroll.state.totalPages);
-        foundTotal = true;
-      }
-    };
-
-    // Check immediately
-    checkTotalPages();
-
-    // Also poll briefly to catch when it becomes available
-    const intervalId = setInterval(() => {
-      checkTotalPages();
-      if (foundTotal) {
-        clearInterval(intervalId);
-      }
-    }, 100);
-
-    // Stop polling after 3 seconds
-    const timeoutId = setTimeout(() => {
-      clearInterval(intervalId);
-    }, 3000);
-
-    return () => {
-      clearInterval(intervalId);
-      clearTimeout(timeoutId);
-    };
-  }, [scroll.provides, scroll.state, documentId, pdfBuffer]);
-
-  // Reset verified total pages when document changes
-  useEffect(() => {
-    setVerifiedTotalPages(0);
-  }, [documentId]);
-
-  const waitForNextFrame = useCallback(async () => {
-    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
-      return;
-    }
-
-    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-  }, []);
-
-  const ensureStampTool = useCallback(async (imageDataUrl: string, userInfo?: { author?: string; customData?: any }) => {
-    if (!annotation.provides) {
-      return null;
-    }
-
-    try {
-      console.debug("[PDFViewer] ensureStampTool", { imageDataUrl: imageDataUrl.slice(0, 32), userInfo });
-      const cached = stampSizeCacheRef.current.get(imageDataUrl);
-      const { width, height } = cached ?? (await loadImageDimensions(imageDataUrl));
-      if (!cached) {
-        stampSizeCacheRef.current.set(imageDataUrl, { width, height });
-      }
-      const maxWidth = 200;
-      const maxHeight = 200;
-
-      let toolWidth = width;
-      let toolHeight = height;
-
-      if (toolWidth > maxWidth) {
-        const scale = maxWidth / toolWidth;
-        toolWidth = maxWidth;
-        toolHeight = Math.round(toolHeight * scale);
-      }
-
-      if (toolHeight > maxHeight) {
-        const scale = maxHeight / toolHeight;
-        toolHeight = maxHeight;
-        toolWidth = Math.round(toolWidth * scale);
-      }
-
-      const toolId = customStampToolIdRef.current ?? "customStamp";
-      const existingTool = annotation.provides.getTool(toolId);
-
-      if (!existingTool) {
-        console.debug("[PDFViewer] adding new custom stamp tool", { toolId, width: toolWidth, height: toolHeight, userInfo });
-        const defaults: any = {
-          type: PdfAnnotationSubtype.STAMP,
-          imageSrc: imageDataUrl,
-          imageSize: { width: toolWidth, height: toolHeight },
-        };
-
-        // Add user information to defaults if provided
-        if (userInfo?.author) {
-          defaults.author = userInfo.author;
-        }
-        if (userInfo?.customData) {
-          defaults.customData = userInfo.customData;
-        }
-
-        annotation.provides.addTool({
-          id: toolId,
-          name: "Custom Stamp",
-          interaction: {
-            exclusive: false,
-            cursor: "crosshair",
-            isRotatable: false,
-            // The stamp image is a fixed-aspect-ratio bitmap (generated once at
-            // placement) — without this, dragging a single resize handle can
-            // stretch the box into different proportions than the image, which
-            // the renderer either distorts or crops the text out of. Matching
-            // the library's own built-in "stamp" tool here.
-            lockAspectRatio: true,
-            lockGroupAspectRatio: true,
-          },
-          // findToolForAnnotation() picks the tool with the highest matchScore,
-          // using strict `>` — on a tie it keeps whichever tool was registered
-          // first. The library's built-in "stamp" tool (registered before ours)
-          // also scores every STAMP annotation as 1, so it was always winning
-          // the tie and our own interaction/behavior config was never applied.
-          // Score strictly higher so our tool deterministically wins.
-          matchScore: () => 2,
-          defaults,
-        });
-        customStampToolIdRef.current = toolId;
-      } else {
-        console.debug("[PDFViewer] updating existing stamp defaults", { toolId, width: toolWidth, height: toolHeight });
-        annotation.provides.setToolDefaults(toolId, {
-          imageSrc: imageDataUrl,
-          imageSize: { width: toolWidth, height: toolHeight },
-        });
-        customStampToolIdRef.current = toolId;
-      }
-
-      await waitForNextFrame();
-      return toolId;
-    } catch (error) {
-      console.error("Failed to register custom stamp tool", error);
-      return null;
-    }
-  }, [annotation.provides, waitForNextFrame]);
-
-  const waitForActiveTool = useCallback(
-    async (toolId: string) => {
-      if (!annotation.provides) {
-        return false;
-      }
-
-      if (annotation.provides.getActiveTool()?.id === toolId) {
-        return true;
-      }
-
-      if (typeof window === "undefined") {
-        return false;
-      }
-
-      const win = window;
-      const start = win.performance?.now?.() ?? Date.now();
-
-      return await new Promise<boolean>((resolve) => {
-        let settled = false;
-        const unsubscribe =
-          annotation.provides?.onActiveToolChange((tool: any) => {
-            if (tool?.id === toolId && !settled) {
-              settled = true;
-              unsubscribe?.();
-              resolve(true);
-            }
-          }) ?? null;
-
-        const poll = () => {
-          if (settled) return;
-          if (annotation.provides?.getActiveTool()?.id === toolId) {
-            settled = true;
-            unsubscribe?.();
-            resolve(true);
-            return;
-          }
-
-          const elapsed = (win.performance?.now?.() ?? Date.now()) - start;
-          if (elapsed >= 2000) {
-            settled = true;
-            unsubscribe?.();
-            console.warn(`[PDFViewer] Timed out waiting for tool ${toolId} to activate after ${elapsed.toFixed(0)}ms`);
-            resolve(false);
-            return;
-          }
-
-          win.requestAnimationFrame(poll);
-        };
-
-        win.requestAnimationFrame(poll);
-      });
-    },
-    [annotation.provides],
-  );
-
-  // Listen for annotation events to track metadata
-  useEffect(() => {
-    if (!annotation.provides) return;
-
-    const unsubscribe = annotation.provides.onAnnotationEvent((event: any) => {
-      if (event.type === 'create') {
-        setAnnotationsMetadata((prev) => {
-          const newMap = new Map(prev);
-          const annotationData = {
-            type: event.annotation?.type || 'unknown',
-            createdAt: new Date().toISOString(),
-            createdBy: userDetails?.name || 'Unknown User',
-            userEmail: userDetails?.email || null,
-            userId: userDetails?.id || null,
-            pageIndex: event.annotation?.pageIndex ?? null,
-            rect: event.annotation?.rect || null,
-            content: event.annotation?.content || null,
-            color: event.annotation?.color || null,
-            rawAnnotation: event.annotation,
-          };
-          newMap.set(event.annotation?.id || `annotation-${Date.now()}`, annotationData);
-          return newMap;
-        });
-      } else if (event.type === 'delete') {
-        setAnnotationsMetadata((prev) => {
-          const newMap = new Map(prev);
-          newMap.delete(event.annotation?.id);
-          return newMap;
-        });
-      } else if (event.type === 'update') {
-        setAnnotationsMetadata((prev) => {
-          const newMap = new Map(prev);
-          const existing = newMap.get(event.annotation?.id);
-          if (existing) {
-            newMap.set(event.annotation?.id, {
-              ...existing,
-              updatedAt: new Date().toISOString(),
-              updatedBy: userDetails?.name || 'Unknown User',
-              rect: event.annotation?.rect || existing.rect,
-              content: event.annotation?.content || existing.content,
-              rawAnnotation: event.annotation,
-            });
-          }
-          return newMap;
-        });
-      }
-    });
-
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
-  }, [annotation.provides, userDetails]);
-
-  const performScrollToPage = useCallback((page: number) => {
-    if (scroll.provides) {
-      scroll.provides.scrollToPage({ pageNumber: page });
-    }
-  }, [scroll.provides]);
-
-  useImperativeHandle(ref, () => ({
-    zoom: {
-      zoomIn: () => {
-        if (zoom.provides) {
-          zoom.provides.zoomIn();
-        }
-      },
-      zoomOut: () => {
-        if (zoom.provides) {
-          zoom.provides.zoomOut();
-        }
-      },
-      setZoom: (level: number) => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(level);
-        }
-      },
-      resetZoom: () => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(ZoomMode.FitPage);
-        }
-      },
-      fitToWidth: () => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(ZoomMode.FitWidth);
-        }
-      },
-      fitToPage: () => {
-        if (zoom.provides) {
-          zoom.provides.requestZoom(ZoomMode.FitPage);
-        }
-      },
-      getZoom: () => zoom.state?.zoomLevel || 1.0,
-    },
-    navigation: {
-      goToPage: (page: number) => {
-        performScrollToPage(page);
-      },
-      getCurrentPage: () => {
-        if (scroll.state) {
-          return scroll.state.currentPage || 1; // Use currentPage property
-        }
-        return 1;
-      },
-      getTotalPages: () => {
-        // Use ref to get the latest value - avoids stale closure issues
-        const currentVerifiedTotal = verifiedTotalPagesRef.current;
-
-        // Use verifiedTotalPages which is set from onLayoutReady/getTotalPages()
-        // This avoids the issue where useScroll initializes totalPages to 1
-        if (currentVerifiedTotal > 0) {
-          return currentVerifiedTotal;
-        }
-        // Fallback: check if scroll.state has a value > 1 (since 1 is the default)
-        if (scroll.state && scroll.state.totalPages > 1) {
-          return scroll.state.totalPages;
-        }
-        return 0; // Return 0 to indicate page count not yet available
-      },
-      nextPage: () => {
-        const currentPage = scroll.state?.currentPage || 1;
-        const totalPages = verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages || 0);
-        if (totalPages > 1 && currentPage < totalPages) {
-          performScrollToPage(currentPage + 1);
-        }
-      },
-      previousPage: () => {
-        const currentPage = scroll.state?.currentPage || 1;
-        if (currentPage > 1) {
-          performScrollToPage(currentPage - 1);
-        }
-      },
-      goToFirstPage: () => {
-        performScrollToPage(1);
-      },
-      goToLastPage: () => {
-        const totalPages = verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages || 0);
-        if (totalPages > 1) {
-          performScrollToPage(totalPages);
-        }
-      },
-      setScrollStrategy: (strategy: ScrollStrategy) => {
-        if (scroll.provides) {
-          scroll.provides.setScrollStrategy(strategy);
-        }
-      },
-      getLayout: () => {
-        if (scroll.provides) {
-          return scroll.provides.getLayout();
-        }
-        return null;
-      },
-      setTwoPageMode: (enabled: boolean) => {
-        if (spreadPlugin) {
-          spreadPlugin.setTwoPageMode(enabled, documentId);
-        }
-      },
-      getTwoPageMode: () => {
-        return spreadPlugin?.getTwoPageMode() ?? false;
-      },
-      onPageChange: (listener: (event: any) => void) => {
-        if (scroll.provides) {
-          return scroll.provides.onPageChange(listener);
-        }
-        return () => {};
-      },
-    },
-    selection: {
-      clearSelection: () => {
-        if (selection.provides) {
-          selection.provides.clear();
-        }
-      },
-      getSelectedText: async () => {
-        if (selection.provides) {
-          const text = await selection.provides.getSelectedText().toPromise();
-          return text.join(' ');
-        }
-        return '';
-      },
-      copy: () => {
-        if (selection.provides) {
-          selection.provides.copyToClipboard();
-        }
-      },
-    },
-    search: {
-      searchText: async (keyword: string) => {
-        if (search.provides) {
-          const task = search.provides.searchAllPages(keyword);
-          return task.toPromise();
-        }
-        return null;
-      },
-      nextResult: () => {
-        if (search.provides) {
-          return search.provides.nextResult();
-        }
-        return -1;
-      },
-      previousResult: () => {
-        if (search.provides) {
-          return search.provides.previousResult();
-        }
-        return -1;
-      },
-      goToResult: (index: number) => {
-        if (search.provides) {
-          return search.provides.goToResult(index);
-        }
-        return -1;
-      },
-      stopSearch: () => {
-        if (search.provides) {
-          search.provides.stopSearch();
-        }
-      },
-      startSearch: () => {
-        if (search.provides) {
-          search.provides.startSearch();
-        }
-      },
-      getSearchState: (): any => {
-        if (search.provides) {
-          return search.provides.getState();
-        }
-        return null;
-      },
-      setShowAllResults: (show: boolean) => {
-        if (search.provides) {
-          search.provides.setShowAllResults(show);
-        }
-      },
-    },
-    document: {
-      isReady: () => isReady,
-      isLoading: () => isLoading,
-      hasPassword: () => {
-        return Boolean(docState?.errorCode === PdfErrorCode.Password || (docState as any)?.isEncrypted);
-      },
-      getDocumentInfo: () => ({
-        currentPage: scroll.state?.currentPage || 1,
-        totalPages: verifiedTotalPagesRef.current > 0 ? verifiedTotalPagesRef.current : (scroll.state?.totalPages > 1 ? scroll.state.totalPages : 0),
-        zoomLevel: zoom.state?.zoomLevel || 1.0,
-        hasActiveSearch: Boolean(search.state),
-      }),
-    },
-    scroll: {
-      scrollToPage: (options: { pageNumber: number; pageCoordinates?: { x: number; y: number }; center?: boolean }) => {
-        performScrollToPage(options.pageNumber);
-      },
-    },
-    rotate: {
-      rotateForward: () => {
-        if (rotate.provides) {
-          rotate.provides.rotateForward();
-        }
-      },
-      rotateBackward: () => {
-        if (rotate.provides) {
-          rotate.provides.rotateBackward();
-        }
-      },
-      setRotation: (rotation: Rotation) => {
-        if (rotate.provides) {
-          rotate.provides.setRotation(rotation);
-        }
-      },
-      getRotation: () => {
-        if (rotate.provides) {
-          return rotate.provides.getRotation();
-        }
-        return Rotation.Degree0;
-      },
-    },
-    annotation: {
-      activateHighlighter: () => {
-        if (!annotation.provides) return;
-        annotation.provides.setActiveTool('highlight');
-      },
-      deactivateHighlighter: () => {
-        if (!annotation.provides) return;
-        annotation.provides.setActiveTool(null);
-      },
-      isHighlighterActive: () => {
-        if (!annotation.provides) return false;
-        return annotation.provides.getActiveTool()?.id === 'highlight';
-      },
-      activateStamp: async (imageDataUrl?: string) => {
-        if (!annotation.provides) {
-          console.warn("Cannot activate stamp: annotation API unavailable");
-          return;
-        }
-
-        if (!imageDataUrl) {
-          annotation.provides.setActiveTool('stamp');
-          return;
-        }
-
-        try {
-          console.debug('[PDFViewer] activateStamp invoked');
-          const toolId = await ensureStampTool(imageDataUrl, currentUserInfoRef.current || undefined);
-          if (!toolId || !annotation.provides) return;
-
-          annotation.provides.setActiveTool(null);
-          await waitForNextFrame();
-          annotation.provides.setActiveTool(toolId);
-          console.debug('[PDFViewer] custom stamp tool active request sent', { toolId });
-          const activated = await waitForActiveTool(toolId);
-          console.debug('[PDFViewer] custom stamp tool activation result', { toolId, activated });
-          if (activated) {
-            setAnnotationRenderVersion((version) => version + 1);
-          }
-        } catch (error) {
-          console.error('Failed to activate custom stamp tool', error);
-        }
-      },
-      deactivateStamp: () => {
-        if (!annotation.provides) return;
-        const activeTool = annotation.provides.getActiveTool();
-        if (!activeTool) return;
-
-        const customId = customStampToolIdRef.current;
-        if (activeTool.id === 'stamp' || (customId && activeTool.id === customId)) {
-          annotation.provides.setActiveTool(null);
-        }
-      },
-      isStampActive: () => {
-        if (!annotation.provides) return false;
-        const activeTool = annotation.provides.getActiveTool();
-        const customId = customStampToolIdRef.current;
-        return activeTool?.id === 'stamp' || (customId !== null && activeTool?.id === customId);
-      },
-      addStampAnnotation: (imageDataUrl: string, pageIndex: number, x: number, y: number, width: number, height: number, userInfo?: { author?: string; customData?: any }) => {
-        if (!annotation.provides) {
-          console.warn('Annotation API not available');
-          return false;
-        }
-
-        try {
-          const api = annotation.provides as any;
-          if (!api.createAnnotation) {
-            console.warn('createAnnotation is not available on the annotation API');
-            return false;
-          }
-
-          const annotationData: any = {
-            type: PdfAnnotationSubtype.STAMP,
-            rect: [x, y, x + width, y + height],
-            imageSrc: imageDataUrl,
-            imageSize: { width, height },
-          };
-
-          // Add user information if provided
-          if (userInfo?.author) {
-            annotationData.author = userInfo.author;
-          }
-
-          // Add any custom data
-          if (userInfo?.customData) {
-            annotationData.customData = userInfo.customData;
-          }
-
-          api.createAnnotation(pageIndex, annotationData);
-
-          if (api.commit) {
-            api.commit();
-          }
-
-          return true;
-        } catch (error) {
-          console.error('Failed to add stamp annotation', error);
-          return false;
-        }
-      },
-      activateSignature: () => {
-        if (!annotation.provides) return;
-        annotation.provides.setActiveTool('ink');
-        console.log('Signature mode activated (using ink tool for drawing)');
-      },
-      deactivateSignature: () => {
-        if (!annotation.provides) return;
-        annotation.provides.setActiveTool(null);
-      },
-      isSignatureActive: () => {
-        if (!annotation.provides) return false;
-        return annotation.provides.getActiveTool()?.id === 'ink';
-      },
-      addSignatureAnnotation: () => {
-        console.warn('addSignatureAnnotation is not fully supported by embedpdf plugin API. Use activateSignature() instead to let users place signatures manually.');
-        return false;
-      },
-      deleteSelectedAnnotation: () => {
-        if (!annotation.provides) return false;
-        const api = annotation.provides as any;
-        const selection = api.getSelectedAnnotation();
-        if (!selection) return false;
-        api.deleteAnnotation(selection.object.pageIndex, selection.object.id);
-        // Every other mutating call here (updateAnnotation, stamp placement,
-        // print/download bytes) explicitly commits afterward — this one
-        // didn't. @embedpdf/plugin-annotation's delete, like create/update,
-        // only stages the removal (dispatches JS state, marks the entry
-        // "deleted" internally) when the history plugin is active; nothing
-        // writes it into the actual PDFium document until something calls
-        // commit(). Left uncommitted, the annotation stays physically
-        // present in the live document — invisible in the UI (JS state says
-        // deleted) but still there for anything that reads the real
-        // document afterward (e.g. a "with annotations" print/export).
-        if (api.commit) {
-          api.commit();
-        }
-        return true;
-      },
-      deleteAnnotationsById: async (items: Array<{ pageIndex: number; annotationId: string }>) => {
-        if (!annotation.provides || items.length === 0) return false;
-        const api = annotation.provides as any;
-        if (api.deleteAnnotations) {
-          // Batch capability: stages every delete (each dispatches + registers
-          // with history synchronously) without an intermediate commit.
-          api.deleteAnnotations(items.map((i) => ({ pageIndex: i.pageIndex, id: i.annotationId })));
-        } else {
-          // Fallback for older engines without the batch capability — accept
-          // the same lock-racing risk deleteAnnotationById has.
-          for (const { pageIndex, annotationId } of items) {
-            api.deleteAnnotation(pageIndex, annotationId);
-          }
-        }
-        if (api.commit) {
-          // commit() returns the library's own Task (.wait(onSuccess, onError)
-          // callbacks), not a real Promise — genuinely wait for it here so the
-          // caller can trust the deletion has actually reached the document
-          // by the time this resolves, rather than firing commit and hoping.
-          const task = api.commit();
-          if (task && typeof task.wait === 'function') {
-            await new Promise<void>((resolve, reject) => {
-              task.wait(() => resolve(), (err: any) => reject(err));
-            });
-          }
-        }
-        return true;
-      },
-      deleteAnnotationById: (pageIndex: number, annotationId: string) => {
-        if (!annotation.provides) return false;
-        const api = annotation.provides as any;
-        api.deleteAnnotation(pageIndex, annotationId);
-        // See the comment in deleteSelectedAnnotation above — commit() must
-        // be called explicitly or the deletion never reaches the actual
-        // PDFium document.
-        if (api.commit) {
-          api.commit();
-        }
-        return true;
-      },
-      getSelectedAnnotation: () => {
-        if (!annotation.provides) return null;
-        const selected = annotation.provides.getSelectedAnnotation();
-        return selected?.object ?? null;
-      },
-      getSelectedAnnotationDetails: () => {
-        if (!annotation.provides) return null;
-        const selected = annotation.provides.getSelectedAnnotation();
-        if (!selected || !selected.object) return null;
-
-        // Return the complete annotation object with all properties
-        // This matches the format: { type, rect, icon, subject, flags, pageIndex, id, created, author }
-        return selected.object;
-      },
-      getAllAnnotations: () => {
-        if (!annotation.provides) {
-          console.warn('[PDFViewer] Annotation API not available');
-          return [];
-        }
-
-        const api = annotation.provides as any;
-
-        // Check if there's a direct getAllAnnotations method
-        if (typeof api.getAllAnnotations === 'function') {
-          console.log('[PDFViewer] Using annotation.provides.getAllAnnotations()');
-          return api.getAllAnnotations();
-        }
-
-        // Check for getAnnotations method
-        if (typeof api.getAnnotations === 'function') {
-          console.log('[PDFViewer] Using annotation.provides.getAnnotations()');
-          return api.getAnnotations();
-        }
-
-        console.warn('[PDFViewer] No direct method to get all annotations. Use onAnnotationEvent to capture annotations as they are created/updated.');
-        return [];
-      },
-      onAnnotationEvent: (callback: (event: any) => void) => {
-        if (!annotation.provides) return null;
-        return annotation.provides.onAnnotationEvent(callback);
-      },
-      updateAnnotation: (pageIndex: number, annotationId: string, updates: Record<string, any>) => {
-        if (!annotation.provides) {
-          console.warn('Annotation API not available');
-          return false;
-        }
-
-        try {
-          const api = annotation.provides as any;
-
-          // See ensurePrintableFlags' doc comment above: whenever this patch
-          // touches flags at all, make sure it doesn't silently clear the
-          // PDF's Print bit along with it.
-          const finalUpdates =
-            updates && 'flags' in updates
-              ? { ...updates, flags: ensurePrintableFlags(updates.flags) }
-              : updates;
-
-          if (api.updateAnnotation) {
-            api.updateAnnotation(pageIndex, annotationId, finalUpdates);
-
-            if (api.commit) {
-              api.commit();
-            }
-
-            return true;
-          }
-
-          console.warn('updateAnnotation method not available on the annotation API');
-          return false;
-        } catch (error) {
-          console.error('Failed to update annotation', error);
-          return false;
-        }
-      },
-      selectAnnotation: (pageIndex: number, annotationId: string | null) => {
-        if (!annotation.provides) {
-          console.warn('Annotation API not available');
-          return false;
-        }
-
-        try {
-          const api = annotation.provides as any;
-
-          if (api.selectAnnotation) {
-            api.selectAnnotation(pageIndex, annotationId);
-            return true;
-          }
-
-          console.warn('selectAnnotation method not available on the annotation API');
-          return false;
-        } catch (error) {
-          console.error('Failed to select annotation', error);
-          return false;
-        }
-      },
-      importAnnotations: async (annotations: Array<{ pageIndex: number; annotation: Record<string, any>; ctx?: { imageData?: any } }>) => {
-        console.log(`[importAnnotations] Importing ${annotations.length} annotations`);
-        if (!annotation.provides) {
-          console.warn('[importAnnotations] Annotation API not available');
-          return { success: 0, failed: annotations.length };
-        }
-
-        const api = annotation.provides as any;
-
-        // Pre-process annotations to ensure stamps have robust context data.
-        // For stamps (type 13), if ctx.imageData is missing, inject the imageSrc string.
-        // This addresses issues in the client where ImageData objects might not be available.
-        // IMPORTANT: Do NOT overwrite existing ctx.imageData (the demo passes proper ImageData objects)
-        const processedAnnotations = annotations.map(item => {
-          if (item.annotation.type === 13) { // Stamp
-            const imageSrc = item.annotation.imageSrc || item.annotation.custom?.imageSrc;
-
-            // Only enhance if:
-            // 1. We have an imageSrc string
-            // 2. ctx.imageData is NOT already a proper ImageData object
-            const hasProperImageData = item.ctx?.imageData &&
-              typeof item.ctx.imageData === 'object' &&
-              item.ctx.imageData.data &&
-              item.ctx.imageData.width;
-
-            if (imageSrc && typeof imageSrc === 'string' && !hasProperImageData) {
-              console.log(`[importAnnotations] Enhancing context for stamp ${item.annotation.id?.substring(0, 8)} (no ImageData provided)`);
-              return {
-                ...item,
-                ctx: {
-                  ...(item.ctx || {}),
-                  // Add string fallbacks for compatibility
-                  imageData: imageSrc,
-                  image: imageSrc,
-                  data: imageSrc
-                }
-              };
-            }
-          }
-          return item;
-        });
-
-        let successCount = 0;
-        let failedCount = 0;
-
-        // Try native importAnnotations first
-        if (api.importAnnotations) {
-          try {
-            console.log('[importAnnotations] Using native importAnnotations method with processed data');
-            const result = await api.importAnnotations(processedAnnotations);
-            console.log('[importAnnotations] Native import result:', result);
-
-            // Force re-render for stamps
-            setAnnotationRenderVersion((v) => v + 1);
-
-            console.log('[importAnnotations] Native import successful');
-            return { success: annotations.length, failed: 0 };
-          } catch (error) {
-            console.error('[importAnnotations] Native importAnnotations failed, falling back:', error);
-          }
-        }
-
-        // Fallback: use createAnnotation for each annotation
-        console.log('[importAnnotations] Using createAnnotation fallback method');
-        for (const item of processedAnnotations) {
-          try {
-            if (api.createAnnotation) {
-              api.createAnnotation(item.pageIndex, item.annotation, item.ctx);
-              successCount++;
-            } else {
-              console.warn(`[importAnnotations] createAnnotation not available for page ${item.pageIndex}`);
-              failedCount++;
-            }
-          } catch (error) {
-            console.error(`[importAnnotations] Failed to import annotation on page ${item.pageIndex}`, error);
-            failedCount++;
-          }
-        }
-
-        if (successCount > 0) {
-          try {
-            console.log(`[importAnnotations] Imported ${successCount} annotations`);
-
-            // Force re-render to ensure visibility
-            setAnnotationRenderVersion((v) => v + 1);
-          } catch (error) {
-            console.error('[importAnnotations] Failed after importing annotations', error);
-          }
-        }
-
-        return { success: successCount, failed: failedCount };
-      },
-      onStateChange: (callback: (state: any) => void) => {
-        if (!annotation.provides) {
-          console.warn('Annotation API not available');
-          return null;
-        }
-
-        const api = annotation.provides as any;
-
-        if (api.onStateChange) {
-          return api.onStateChange(callback);
-        }
-
-        console.warn('onStateChange method not available. Consider using onAnnotationEvent instead.');
-        return null;
-      },
-      getAllAnnotationsWithMetadata: (annotationsArray?: any[]) => {
-        // If annotations not provided, try to get them
-        const annotations = annotationsArray || [];
-
-        return annotations.map((ann: any) => {
-          const metadata = annotationsMetadata.get(ann.id) || {};
-          return {
-            ...ann,
-            // Merge with custom metadata if available
-            createdBy: metadata.createdBy || ann.author || userDetails?.name || 'Unknown',
-            createdAt: metadata.createdAt || ann.created || ann.creationDate || null,
-            updatedAt: metadata.updatedAt || ann.modificationDate || null,
-            userEmail: metadata.userEmail || userDetails?.email || null,
-            userId: metadata.userId || userDetails?.id || null,
-          };
-        });
-      },
-      exportAnnotationsAsJSON: () => {
-        const annotations: any[] = [];
-        annotationsMetadata.forEach((metadata, annotationId) => {
-          annotations.push({
-            id: annotationId,
-            ...metadata,
-          });
-        });
-
-        const exportData = {
-          documentInfo: {
-            totalPages: verifiedTotalPages > 0 ? verifiedTotalPages : (scroll.state?.totalPages > 1 ? scroll.state.totalPages : 0),
-            exportedAt: new Date().toISOString(),
-          },
-          userDetails: userDetails || null,
-          annotations,
-          summary: {
-            totalAnnotations: annotations.length,
-            byType: annotations.reduce((acc: any, ann) => {
-              acc[ann.type] = (acc[ann.type] || 0) + 1;
-              return acc;
-            }, {}),
-          },
-        };
-
-        return JSON.stringify(exportData, null, 2);
-      },
-      enableClickToPlace: (callback: (clickData: { pageIndex: number; x: number; y: number; pageWidth?: number; pageHeight?: number }) => void) => {
-        console.log('Click-to-place mode enabled');
-        clickToPlaceCallbackRef.current = callback;
-      },
-      placeStampAtPosition: async (imageDataUrl: string, pageIndex: number, x: number, y: number) => {
-        if (!annotation.provides) {
-          console.error('Annotation API not available');
-          return;
-        }
-
-        try {
-          const { width, height } = await loadImageDimensions(imageDataUrl);
-          const maxWidth = 200;
-          const maxHeight = 200;
-
-          let stampWidth = width;
-          let stampHeight = height;
-
-          if (stampWidth > maxWidth) {
-            const scale = maxWidth / stampWidth;
-            stampWidth = maxWidth;
-            stampHeight = Math.round(stampHeight * scale);
-          }
-
-          if (stampHeight > maxHeight) {
-            const scale = maxHeight / stampHeight;
-            stampHeight = maxHeight;
-            stampWidth = Math.round(stampWidth * scale);
-          }
-
-          const api = annotation.provides as any;
-          if (!api.createAnnotation) {
-            console.warn('createAnnotation is not available on the annotation API');
-            return;
-          }
-
-          await api.createAnnotation(pageIndex, {
-            type: PdfAnnotationSubtype.STAMP,
-            rect: [x, y, x + stampWidth, y + stampHeight],
-            imageSrc: imageDataUrl,
-            imageSize: { width: stampWidth, height: stampHeight },
-          });
-
-          if (api.commit) {
-            await api.commit();
-          }
-        } catch (error) {
-          console.error('Error placing stamp', error);
-        }
-
-        clickToPlaceCallbackRef.current = null;
-      },
-
-      // v2.14.1 lock predicates — engine-enforced
-      isAnnotationInteractive: (ann) => {
-        const cap = annotation.provides as any;
-        return cap?.isAnnotationInteractive?.(ann) ?? true;
-      },
-      isAnnotationStructurallyLocked: (ann) => {
-        const cap = annotation.provides as any;
-        return cap?.isAnnotationStructurallyLocked?.(ann) ?? false;
-      },
-      isAnnotationContentLocked: (ann) => {
-        const cap = annotation.provides as any;
-        return cap?.isAnnotationContentLocked?.(ann) ?? false;
-      },
-
-      // v2.14.1 document-level lock mode
-      setLocked: (mode) => {
-        const cap = annotation.provides as any;
-        cap?.setLocked?.(mode);
-      },
-      getLocked: () => {
-        const cap = annotation.provides as any;
-        return cap?.getLocked?.() ?? ({ type: 0 /* LockModeType.None */ } as LockMode);
-      },
-    },
-    download: {
-      downloadWithAnnotations: async (filename = 'document-with-annotations.pdf') => {
-        if (!engine) {
-          console.error('Engine not available');
-          return;
-        }
-        const doc = docState?.document;
-        if (!doc) {
-          console.error('Document not available for saveAsCopy');
-          return;
-        }
-        try {
-          const task = engine.saveAsCopy(doc);
-          const pdfBytes = await new Promise<ArrayBuffer>((resolve, reject) => {
-            task.wait(
-              (buffer: ArrayBuffer) => resolve(buffer),
-              (error: any) => reject(error)
-            );
-          });
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = filename;
-          link.click();
-          URL.revokeObjectURL(url);
-        } catch (error) {
-          console.error('Error downloading PDF with annotations:', error);
-        }
-      },
-      downloadWithoutAnnotations: async (filename = 'document-original.pdf') => {
-        if (!pdfBuffer) {
-          console.error('Original PDF buffer not available');
-          return;
-        }
-        try {
-          const blob = new Blob([pdfBuffer as BlobPart], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = filename;
-          link.click();
-          URL.revokeObjectURL(url);
-        } catch (error) {
-          console.error('Error downloading original PDF:', error);
-        }
-      },
-    },
-    print: {
-      printWithAnnotations: async () => {
-        if (!print.provides) {
-          console.error('Print plugin not available');
-          return;
-        }
-        print.provides.print({ includeAnnotations: true });
-      },
-      printWithoutAnnotations: async () => {
-        if (!print.provides) {
-          console.error('Print plugin not available');
-          return;
-        }
-        print.provides.print({ includeAnnotations: false });
-      },
-    },
-  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool, verifiedTotalPages, docState]);
-
-  const currentZoom = zoom.state?.currentZoomLevel || 1;
-
-  const renderPage = useCallback(({
-    pageIndex,
-    scale,
-    width,
-    height,
-    document,
-    rotation,
-  }: any) => {
-    // Rely on internal layout handling from Rotate/RenderLayer
-    // Removing manual width/height swapping to match reference implementation
-
-    const handlePageClick = (e: React.MouseEvent<HTMLDivElement>) => {
-      // Only handle clicks if we're in click-to-place mode
-      if (clickToPlaceCallbackRef.current) {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / scale;
-        const y = (e.clientY - rect.top) / scale;
-
-        console.log(`Page clicked at: page=${pageIndex}, x=${x}, y=${y}`);
-
-        clickToPlaceCallbackRef.current({
-          pageIndex,
-          x,
-          y,
-          pageWidth: width,
-          pageHeight: height,
-          target: e.currentTarget as HTMLElement,
-        });
-
-        // Clear the callback after use
-        clickToPlaceCallbackRef.current = null;
-      }
-    };
-
-    const effectiveScale = (typeof scale === 'number' && scale > 0) ? scale : currentZoom;
-
-    return (
-      <div
-        style={{
-          position: "relative",
-          backgroundColor: "#fff",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-          borderRadius: 4,
-          cursor: clickToPlaceCallbackRef.current ? 'crosshair' : 'default',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-        }}
-        draggable={false}
-        onClick={handlePageClick}
-      >
-        <Rotate
-          key={`${document?.id ?? 'doc'}-${pageIndex}-${rotation}`}
-          documentId={documentId}
-          pageIndex={pageIndex}
-          rotation={rotation}
-        >
-          <PagePointerProvider
-            documentId={documentId}
-            pageIndex={pageIndex}
-          >
-            <RenderLayer
-              documentId={documentId}
-              pageIndex={pageIndex}
-              scale={effectiveScale}
-              style={{ pointerEvents: "none" }}
-            />
-            <SearchLayer
-              documentId={documentId}
-              pageIndex={pageIndex}
-              scale={effectiveScale}
-              style={{ pointerEvents: "none" }}
-            />
-            <SelectionLayer
-              documentId={documentId}
-              pageIndex={pageIndex}
-              scale={effectiveScale}
-            />
-            <AnnotationLayer
-              key={`annotation-layer-${pageIndex}-${annotationRenderVersion}`}
-              documentId={documentId}
-              pageIndex={pageIndex}
-              scale={effectiveScale}
-            />
-          </PagePointerProvider>
-        </Rotate>
-        <AnnotationFloatingToolbar
-          annotationPlugin={annotation as any}
-          documentId={documentId}
-          pageIndex={pageIndex}
-          scale={effectiveScale}
-          pageSize={{ width: width / effectiveScale, height: height / effectiveScale }}
-        />
-      </div>
-    );
-  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom]);
-
-  return (
-    <DocumentContent documentId={documentId}>
-      {({ isLoaded, documentState }) => {
-        console.log('[PDFContent] DocumentContent render:', {
-          documentId,
-          isLoaded,
-          hasEngine: !!engine,
-          hasPdfBuffer: !!pdfBuffer,
-          docState: documentState?.errorCode,
-          isEncrypted: (documentState as any)?.isEncrypted
-        });
-
-        if (isLoaded) {
-          console.log('[PDFContent] Rendering Viewport and Scroller for document:', documentId);
-        }
-
-        return (
-          <>
-            <PasswordLogic
-              documentState={documentState}
-              documentId={documentId}
-              {...(onPasswordRequest ? { onPasswordRequest } : {})}
-            />
-            {isLoaded ? (
-              <GlobalPointerProvider documentId={documentId}>
-                <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", userSelect: 'none', WebkitUserSelect: 'none' }}>
-                  <Viewport
-                    documentId={documentId}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      flexGrow: 1,
-                      backgroundColor: "#eeeeee",
-                      overflow: "auto",
-                      position: "relative",
-                      userSelect: 'none',
-                      WebkitUserSelect: 'none',
-                    }}
-                  >
-                    <Scroller documentId={documentId} renderPage={renderPage} />
-                  </Viewport>
-                </div>
-              </GlobalPointerProvider>
-            ) : (
-              hideInternalLoading ? null : (
-                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#fff' }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div>
-                      {documentState?.errorCode === PdfErrorCode.Password
-                        ? "Waiting for password..."
-                        : "Loading PDF content..."}
-                    </div>
-                    <div style={{ fontSize: '12px', marginTop: '8px', color: '#666' }}>
-                      Document ID: {documentId.substring(0, 20)}...
-                    </div>
-                  </div>
-                </div>
-              )
-            )}
-          </>
-        );
-      }}
-    </DocumentContent>
-  );
-});
-
-const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
-  ref
-): ReactElement | null {
+type BodyProps = Pick<
+  PDFViewerProps,
+  | "pdfBuffer"
+  | "password"
+  | "onPasswordRequest"
+  | "onDocumentLoad"
+  | "hideInternalLoading"
+  | "twoPageMode"
+  | "scrollStrategy"
+  | "onPageChange"
+  | "userDetails"
+  | "permissions"
+  | "enableFormFilling"
+  | "enableFormDesign"
+  | "onFormStateChange"
+  | "onFormFieldSelect"
+>;
+
+// Lives inside <Viewer>: opens the document, handles its password, and — once
+// it is ready — mounts the stage and the imperative ref API.
+const ViewerBody = forwardRef<PDFViewerRef, BodyProps>(function ViewerBody(props, ref) {
   const {
-    engine,
-    isLoading: engineLoading,
-    error: engineError,
-  } = usePdfiumEngine();
+    pdfBuffer, password, onPasswordRequest, onDocumentLoad, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange,
+    userDetails, permissions, enableFormFilling = false, enableFormDesign = false, onFormStateChange, onFormFieldSelect,
+  } = props;
+  // The password that opened the document — needed to open a copy of it for saving.
+  const passwordRef = useRef<string | undefined>(password);
+  passwordRef.current = password;
+  const handlePasswordAccepted = useCallback((accepted: string) => {
+    passwordRef.current = accepted;
+  }, []);
+  const documents = useDocuments();
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const scope = useMemo(() => scopeFor(permissions), [permissions]);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
 
-  const [password, setPassword] = useState("");
-  const [isPasswordChecked, setIsPasswordChecked] = useState(false);
-  const [isReady, setIsReady] = useState(false);
-
-  // Create stable documentId for multi-document support in v2.x
-  // Use a hash of the buffer content to create a stable ID that survives HMR
-  const [documentId, setDocumentId] = useState<string>('');
-  const lastBufferHashRef = useRef<string>('');
-
+  // Open the buffer; a new buffer replaces the previous document.
   useEffect(() => {
     if (!pdfBuffer) {
-      setDocumentId('');
-      lastBufferHashRef.current = '';
-      return;
+      setDocumentId(null);
+      return undefined;
     }
-
-    // Create a simple hash from the buffer to detect actual content changes
-    // Use first/last bytes and length as a lightweight fingerprint
-    const first4 = Array.from(pdfBuffer.slice(0, 4)).join(',');
-    const last4 = Array.from(pdfBuffer.slice(-4)).join(',');
-    const bufferHash = `${pdfBuffer.byteLength}-${first4}-${last4}`;
-
-    // Only create a new document ID if the buffer content actually changed
-    if (bufferHash !== lastBufferHashRef.current) {
-      const newId = `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      console.log('[PDFViewer] New PDF content detected (hash changed), creating new document ID:', newId, 'hash:', bufferHash);
-      lastBufferHashRef.current = bufferHash;
-      setDocumentId(newId);
-    } else {
-      console.log('[PDFViewer] Same PDF content (hash unchanged), keeping existing ID:', documentId);
-    }
+    const id = `pdf-${++documentSeq}-${Math.random().toString(36).slice(2, 9)}`;
+    // The engine takes ownership of the bytes it is given, so hand it a copy.
+    const bytes = pdfBuffer instanceof Uint8Array ? pdfBuffer.slice() : new Uint8Array(pdfBuffer as ArrayBuffer).slice();
+    setDocumentId(id);
+    documents
+      .open({ kind: "bytes", id, bytes }, { name: "document.pdf", activate: true, scope: scopeRef.current, ...(password ? { password } : {}) })
+      .catch(() => undefined);
+    return () => {
+      documents.close(id).catch(() => undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfBuffer]);
 
-  // Log engine errors
-  useEffect(() => {
-    if (engineError) {
-      console.error('[PDFViewer] Engine error:', engineError);
-      console.error('[PDFViewer] Engine error details:', JSON.stringify(engineError, null, 2));
-    }
-  }, [engineError]);
+  const info = documents.docs.find((d) => d.id === documentId) ?? null;
 
-  const plugins = useMemo(() => {
-    if (!pdfBuffer || !isReady || !documentId) {
-      console.log('[PDFViewer] Plugins not ready:', { hasPdfBuffer: !!pdfBuffer, isReady, hasDocumentId: !!documentId });
-      return [];
-    }
-
-    console.log('[PDFViewer] Creating plugins with pdfBuffer:', {
-      documentId,
-      type: pdfBuffer.constructor.name,
-      byteLength: pdfBuffer.byteLength,
-      hasBuffer: !!pdfBuffer.buffer
-    });
-
-    try {
-      // Convert Uint8Array to ArrayBuffer properly
-      const bufferToUse = pdfBuffer instanceof Uint8Array
-        ? pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength)
-        : pdfBuffer;
-
-      console.log('[PDFViewer] Buffer details:', {
-        isUint8Array: pdfBuffer instanceof Uint8Array,
-        originalByteLength: pdfBuffer.byteLength,
-        convertedByteLength: (bufferToUse as ArrayBuffer).byteLength,
-        bufferConstructor: bufferToUse?.constructor?.name
-      });
-
-      const documentConfig = {
-        documentId: documentId,
-        buffer: bufferToUse as ArrayBuffer,
-        name: 'document.pdf',
-        ...(password ? { password } : {}),
-      };
-
-      console.log('[PDFViewer] Document config:', {
-        documentId: documentConfig.documentId,
-        bufferSize: documentConfig.buffer.byteLength,
-        name: documentConfig.name,
-        hasPassword: !!password
-      });
-
-      return [
-        createPluginRegistration(DocumentManagerPluginPackage, {
-          initialDocuments: [{
-            documentId: documentConfig.documentId,
-            buffer: documentConfig.buffer,
-            name: documentConfig.name,
-            autoActivate: true,
-            ...(password ? { password: documentConfig.password } : {}),
-          }],
-        }),
-        createPluginRegistration(RenderPluginPackage),
-        createPluginRegistration(ViewportPluginPackage, {
-          viewportGap: 10,
-        }),
-        createPluginRegistration(ZoomPluginPackage, {
-          defaultZoomLevel: ZoomMode.FitPage,  // Use FitPage mode to ensure proper initialization
-          minZoom: 0.2,
-          maxZoom: 5.0,
-        }),
-        createPluginRegistration(SpreadPluginPackage),
-        createPluginRegistration(ScrollPluginPackage),
-        createPluginRegistration(InteractionManagerPluginPackage),
-        createPluginRegistration(RotatePluginPackage),
-        createPluginRegistration(SelectionPluginPackage),
-        createPluginRegistration(SearchPluginPackage),
-        createPluginRegistration(HistoryPluginPackage),
-        createPluginRegistration(AnnotationPluginPackage, {
-          annotationAuthor: "User",
-          // Stamps loaded from a saved PDF match the library's built-in "stamp"
-          // tool, not our lazily-registered "customStamp" tool, so its
-          // isRotatable: false never applied to them. Patch the built-in tool too.
-          tools: [{ id: "stamp", interaction: { exclusive: false, isRotatable: false } }],
-        }),
-        createPluginRegistration(PrintPluginPackage),
-      ];
-    } catch (error) {
-      console.error('[PDFViewer] Error creating plugins:', error);
-      return [];
-    }
-  }, [pdfBuffer, password, isReady, engine, documentId]);
-
-  useEffect(() => {
-    const hasValidBuffer = Boolean(
-      pdfBuffer && (
-        pdfBuffer instanceof Uint8Array ||
-        (pdfBuffer as any)?.byteLength !== undefined
-      )
-    );
-
-    const ready =
-      engineLoading === false &&
-      engineError === null &&
-      engineLoading === false &&
-      engineError === null &&
-      hasValidBuffer;
-
-    console.log('[PDFViewer] Ready check:', {
-      engineLoading,
-      engineError: !!engineError,
-      isPasswordChecked,
-      pdfBufferType: pdfBuffer?.constructor.name,
-      hasValidBuffer,
-      ready
-    });
-
-    setIsReady(ready);
-    setIsReady(ready);
-  }, [engineLoading, engineError, pdfBuffer]);
-
-  // Removed manual isPasswordProtected check in favor of handling it via DocumentManagerPlugin
-  // useEffect logic for onPasswordRequest moved to PDFContent
-
-  if (!engine) {
-    console.log('[PDFViewer] Waiting for engine...');
-    return null;
-  }
-
-  if (!isReady) {
-    console.log('[PDFViewer] Not ready yet:', {
-      engineLoading,
-      engineError: !!engineError,
-      isPasswordChecked,
-      hasPdfBuffer: !!pdfBuffer,
-    });
-    return null;
+  if (!documentId || !info) {
+    return hideInternalLoading ? null : centered(<div>Loading PDF...</div>);
   }
 
   return (
-    <EmbedPDF
-      engine={engine}
-      plugins={plugins}
-      {...(permissions ? { config: { permissions } } : {})}
-    >
-      {({ activeDocumentId }) => {
-        console.log('[PDFViewer] EmbedPDF render:', {
-          hasActiveDocumentId: !!activeDocumentId,
-          activeDocumentId,
-          expectedDocumentId: documentId,
-          match: activeDocumentId === documentId
-        });
-
-        return activeDocumentId ? (
-          <>
-            <PDFContent
-              ref={ref}
-              isReady={isReady}
-              isLoading={engineLoading}
-              hasPassword={Boolean(password) /* handled internally */}
-              pdfBuffer={pdfBuffer || null}
-              engine={engine}
-              documentId={activeDocumentId}
-              {...(userDetails ? { userDetails } : {})}
-              {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
-              {...(onPasswordRequest ? { onPasswordRequest } : {})}
-              hideInternalLoading={!!hideInternalLoading}
-              twoPageMode={twoPageMode}
-              scrollStrategy={scrollStrategy}
-              onPageChange={onPageChange}
-            />
-          </>
-        ) : hideInternalLoading ? null : (
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', backgroundColor: '#f5f5f5' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div>Loading PDF...</div>
-              <div style={{ fontSize: '12px', marginTop: '8px', color: '#666' }}>
-                Initializing document ({documentId ? 'ID set' : 'waiting for ID'})
-              </div>
-            </div>
-          </div>
-        );
-      }}
-    </EmbedPDF >
+    <DocumentScope id={documentId}>
+      <PasswordGate
+        documentId={documentId}
+        info={info}
+        {...(onPasswordRequest ? { onPasswordRequest } : {})}
+        onPasswordAccepted={handlePasswordAccepted}
+      />
+      <DocumentGate
+        fallback={
+          hideInternalLoading
+            ? null
+            : centered(<div>{info.status === "locked" ? "Waiting for password..." : info.status === "error" ? "Failed to load PDF" : "Loading PDF content..."}</div>)
+        }
+      >
+        <ReadyViewer
+          ref={ref}
+          documentId={documentId}
+          pdfBuffer={pdfBuffer}
+          twoPageMode={twoPageMode}
+          scrollStrategy={scrollStrategy}
+          onPageChange={onPageChange}
+          onDocumentLoad={onDocumentLoad}
+          userDetails={userDetails}
+          denyAnnotationEdits={permissions?.overrides?.modifyAnnotations === false}
+          enableFormFilling={enableFormFilling}
+          enableFormDesign={enableFormDesign}
+          onFormStateChange={onFormStateChange}
+          onFormFieldSelect={onFormFieldSelect}
+          password={passwordRef}
+        />
+      </DocumentGate>
+    </DocumentScope>
   );
 });
 
+interface ReadyProps {
+  documentId: string;
+  pdfBuffer: PDFViewerProps["pdfBuffer"];
+  twoPageMode: boolean | undefined;
+  scrollStrategy: ScrollStrategy | undefined;
+  onPageChange: ((page: number) => void) | undefined;
+  onDocumentLoad: PDFViewerProps["onDocumentLoad"];
+  userDetails: PDFViewerProps["userDetails"];
+  denyAnnotationEdits: boolean;
+  enableFormFilling: boolean;
+  enableFormDesign: boolean;
+  onFormStateChange: PDFViewerProps["onFormStateChange"];
+  onFormFieldSelect: PDFViewerProps["onFormFieldSelect"];
+  password: { current: string | undefined };
+}
+
+// While click-to-place is on, a click anywhere on a page is reported instead of
+// reaching the page's own layers.
+const ClickToPlaceLayer = ({ active, handler }: { active: boolean; handler: { current: ((c: ClickToPlaceData) => void) | null } }) => {
+  const page = usePage();
+  if (!active) return null;
+  return (
+    <div
+      style={{ position: "absolute", inset: 0, zIndex: 50, cursor: "crosshair" }}
+      onClick={(e) => {
+        const callback = handler.current;
+        if (!callback) return;
+        const point = page.toContentPoint(e.clientX, e.clientY);
+        handler.current = null;
+        callback({
+          pageIndex: page.pageIndex,
+          x: point.x,
+          y: point.y,
+          pageWidth: page.transform.contentWidth,
+          pageHeight: page.transform.contentHeight,
+          target: e.currentTarget,
+        });
+      }}
+    />
+  );
+};
+
+// The form fields of a page. Filling mode: the user types into them. View mode:
+// they show their values but can't be focused or changed (`inert` blocks pointer
+// and keyboard for the whole subtree). In design mode the active tool is not a
+// filling one, so the layer steps aside by itself.
+const FormFillSurface = ({ fillable }: { fillable: boolean }) => {
+  const setInert = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el) return;
+      if (fillable) el.removeAttribute("inert");
+      else el.setAttribute("inert", "");
+    },
+    [fillable],
+  );
+  return (
+    <div ref={setInert} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+      <FormLayer />
+    </div>
+  );
+};
+
+// Rendered once the document is ready: everything below can resolve the
+// document's capabilities.
+const ReadyViewer = forwardRef<PDFViewerRef, ReadyProps>(function ReadyViewer(
+  { documentId, pdfBuffer, twoPageMode, scrollStrategy, onPageChange, onDocumentLoad, userDetails, denyAnnotationEdits, enableFormFilling, enableFormDesign, onFormStateChange, onFormFieldSelect, password },
+  ref,
+) {
+  const kernel = useKernel();
+  const stage = useCapability(StageToken) as StageCapability;
+
+  // ── display settings driven by props ────────────────────────────────────
+  useEffect(() => {
+    if (twoPageMode !== undefined) stage.setSpread(twoPageMode ? "odd" : "none");
+  }, [stage, twoPageMode]);
+  useEffect(() => {
+    if (scrollStrategy !== undefined) stage.setLayout(scrollStrategy === ScrollStrategy.Horizontal ? "horizontal" : "vertical");
+  }, [stage, scrollStrategy]);
+
+  const onPageChangeRef = useRef(onPageChange);
+  onPageChangeRef.current = onPageChange;
+  useEffect(() => {
+    let last = stage.currentPage();
+    return kernel.subscribe(() => {
+      const now = stage.currentPage();
+      if (now === last) return;
+      last = now;
+      onPageChangeRef.current?.(now + 1);
+    });
+  }, [kernel, stage]);
+
+  const onDocumentLoadRef = useRef(onDocumentLoad);
+  onDocumentLoadRef.current = onDocumentLoad;
+  useEffect(() => {
+    onDocumentLoadRef.current?.({
+      totalPages: stage.pageCount(),
+      currentPage: stage.currentPage() + 1,
+    });
+  }, [kernel, stage, documentId]);
+
+  // ── annotations ─────────────────────────────────────────────────────────
+  const hub = useMemo(() => new AnnotationHub(kernel, documentId), [kernel, documentId]);
+  useEffect(() => {
+    hub.start().catch((error) => console.error("[PDFViewer] annotations failed to start:", error));
+    return () => hub.dispose();
+  }, [hub]);
+
+  // ── forms ───────────────────────────────────────────────────────────────
+  const onFormStateChangeRef = useRef(onFormStateChange);
+  onFormStateChangeRef.current = onFormStateChange;
+  const onFormFieldSelectRef = useRef(onFormFieldSelect);
+  onFormFieldSelectRef.current = onFormFieldSelect;
+  const designingRef = useRef(enableFormDesign);
+  designingRef.current = enableFormDesign;
+  const forms = useMemo(
+    () =>
+      new FormsController(kernel, documentId, hub, {
+        onFormStateChange: (state) => onFormStateChangeRef.current?.(state),
+        onFormFieldSelect: (field) => onFormFieldSelectRef.current?.(field),
+        isDesigning: () => designingRef.current,
+        password: () => password.current,
+      }),
+    [kernel, documentId, hub, password],
+  );
+  useEffect(() => {
+    forms.start();
+    return () => forms.dispose();
+  }, [forms]);
+  // Design mode swaps the pointer for a tool that edits fields instead of filling them;
+  // leaving it also disarms a field tool that was left armed.
+  useEffect(() => {
+    if (enableFormDesign) forms.enterDesign();
+    else forms.exitDesign();
+  }, [enableFormDesign, forms]);
+
+  const lockRef = useRef<LockMode>({ type: LockModeType.None });
+  const [locked, setLocked] = useState(false);
+  const onLockChange = useCallback(() => setLocked(lockRef.current.type === LockModeType.All), []);
+
+  const clickHandlerRef = useRef<((c: ClickToPlaceData) => void) | null>(null);
+  const [placing, setPlacing] = useState(false);
+  const clickToPlace = useMemo(
+    () => ({
+      get current() {
+        return clickHandlerRef.current;
+      },
+      set current(value: ((c: ClickToPlaceData) => void) | null) {
+        clickHandlerRef.current = value;
+        setPlacing(!!value);
+      },
+    }),
+    [],
+  );
+
+  const denyEditsRef = useRef(denyAnnotationEdits);
+  denyEditsRef.current = denyAnnotationEdits;
+
+  const userInfoRef = useRef<{ author?: string; customData?: any } | null>(null);
+  useEffect(() => {
+    userInfoRef.current = userDetails
+      ? { author: userDetails.name || userDetails.email || "Guest", customData: userDetails }
+      : null;
+  }, [userDetails]);
+
+  const api = useMemo<PDFViewerRef>(
+    () => ({
+      ...createDocumentApi({ kernel, stage, documentId, pdfBuffer }),
+      selection: createSelectionApi(kernel, documentId),
+      search: createSearchApi(kernel, documentId),
+      annotation: createAnnotationApi({
+        kernel,
+        documentId,
+        hub,
+        lock: lockRef,
+        onLockChange,
+        clickToPlace,
+        denyEdits: () => denyEditsRef.current,
+        refresh: () => undefined,
+        userInfo: userInfoRef,
+      }),
+      forms: createFormsApi(forms),
+    }),
+    [kernel, stage, documentId, pdfBuffer, hub, forms, onLockChange, clickToPlace],
+  );
+  useImperativeHandle(ref, () => api, [api]);
+
+  return (
+    <Stage
+      style={{ width: "100%", height: "100%", backgroundColor: "#eeeeee" }}
+      overlay={denyAnnotationEdits ? undefined : <AnnotationDeleteMenu hub={hub} />}
+    >
+      {() => (
+        <>
+          {/* the annotation layer draws annotations, so the page bitmap leaves them out */}
+          <RenderLayer />
+          <SelectionLayer />
+          <SearchLayer />
+          <div style={{ position: "absolute", inset: 0, pointerEvents: locked ? "none" : undefined }}>
+            <AnnotationLayer />
+          </div>
+          <FormFillSurface fillable={enableFormFilling} />
+          <ClickToPlaceLayer active={placing} handler={clickHandlerRef} />
+        </>
+      )}
+    </Stage>
+  );
+});
+
+const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(props, ref): ReactElement | null {
+  const { className, style } = props;
+  return (
+    <div className={className} style={{ width: "100%", height: "100%", ...style }}>
+      <Viewer
+        engine={createEngine}
+        plugins={viewerPlugins}
+        fallback={props.hideInternalLoading ? null : centered(<div>Loading PDF...</div>)}
+        renderError={(error) => centered(<div>Failed to start the PDF viewer: {String((error as Error)?.message ?? error)}</div>)}
+      >
+        <ViewerBody ref={ref} {...props} />
+      </Viewer>
+    </div>
+  );
+});
+
+export { rotationToDegrees, degreesToRotation };
 export default PDFViewer;

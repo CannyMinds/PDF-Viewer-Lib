@@ -1,17 +1,7 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { usePdfiumEngine } from "@embedpdf/engines/react";
-import { createPluginRegistration } from '@embedpdf/core';
-import { DocumentManagerPluginPackage } from "@embedpdf/plugin-document-manager";
-import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
-import { ScrollPluginPackage } from "@embedpdf/plugin-scroll";
-import { RenderPluginPackage } from "@embedpdf/plugin-render";
-import { SelectionPluginPackage } from "@embedpdf/plugin-selection";
-import { InteractionManagerPluginPackage } from "@embedpdf/plugin-interaction-manager";
-import { ZoomPluginPackage } from "@embedpdf/plugin-zoom";
-import { HistoryPluginPackage } from "@embedpdf/plugin-history";
-import { AnnotationPluginPackage } from "@embedpdf/plugin-annotation";
+import { useState, useEffect, useMemo } from 'react';
 import { validatePDFBuffer } from "./utils/validatePDFBuffer";
 import { type PDFError, PDFErrorType, createPDFError } from "./utils/errorTypes";
+import { createEngine, viewerPlugins } from "./runtime";
 
 interface PDFViewerOptions {
     pdfBuffer?: ArrayBuffer | null | undefined;
@@ -40,13 +30,13 @@ export interface PDFViewerHookReturn {
 }
 
 export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewerOptions): PDFViewerHookReturn {
-    const { engine, isLoading: engineLoading, error: engineError } = usePdfiumEngine();
     const [error, setError] = useState<PDFError | null>(null);
     const [isReady, setIsReady] = useState(false);
     const [password, setPassword] = useState(initialPassword || "");
     const [isPasswordChecked, setIsPasswordChecked] = useState(false);
 
-    const isLoading = engineLoading;
+    // The engine boots lazily inside <Viewer>, so there is nothing to wait for here.
+    const isLoading = false;
 
     // Reset states when pdfBuffer changes
     useEffect(() => {
@@ -56,17 +46,6 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
             setIsPasswordChecked(false);
         }
     }, [pdfBuffer]);
-
-    // Handle engine errors
-    useEffect(() => {
-        if (engineError) {
-            setError(createPDFError(
-                PDFErrorType.ENGINE,
-                `PDFium engine error: ${engineError.message || engineError}`,
-                engineError
-            ));
-        }
-    }, [engineError]);
 
     // Validate PDF buffer
     useEffect(() => {
@@ -89,36 +68,9 @@ export function usePDFViewer({ pdfBuffer, password: initialPassword }: PDFViewer
         setIsReady(true);
     }, [pdfBuffer]);
 
-    const plugins = useMemo(() => {
-        if (!pdfBuffer || !isReady) return [];
-
-        return [
-            createPluginRegistration(DocumentManagerPluginPackage, {
-                initialDocuments: [{
-                    buffer: pdfBuffer as ArrayBuffer,
-                    name: 'document.pdf',
-                    autoActivate: true,
-                    ...(password ? { password } : {}),
-                }],
-            }),
-            createPluginRegistration(ViewportPluginPackage, {
-                viewportGap: 10,
-            }),
-            createPluginRegistration(ScrollPluginPackage),
-            createPluginRegistration(InteractionManagerPluginPackage),
-            createPluginRegistration(ZoomPluginPackage, {
-                defaultZoomLevel: 1.0,
-                minZoom: 0.2,
-                maxZoom: 5.0,
-            }),
-            createPluginRegistration(RenderPluginPackage),
-            createPluginRegistration(SelectionPluginPackage),
-            createPluginRegistration(HistoryPluginPackage),
-            createPluginRegistration(AnnotationPluginPackage, {
-                annotationAuthor: "User",
-            }),
-        ];
-    }, [pdfBuffer, password, isReady]);
+    // Passed straight to <Viewer engine={engine} plugins={plugins}>.
+    const engine = createEngine;
+    const plugins = useMemo(() => (pdfBuffer && isReady ? viewerPlugins : []), [pdfBuffer, isReady]);
 
     const instance: PDFViewerInstance = useMemo(() => ({
         setPassword: (newPassword: string) => {
