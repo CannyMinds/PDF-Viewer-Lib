@@ -1723,10 +1723,56 @@ export default function Page() {
             </Box>
           )}
 
+          <Box sx={{ width: "100%", height: "60vh", border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden", position: 'relative', display: 'flex', flexDirection: 'row' }}>
+            {/* Thumbnail Sidebar */}
+            {showThumbnails && pdfBuffer && (
+              <PdfThumbnailSidebar
+                pdfBuffer={pdfBuffer}
+                totalPages={pdfTotalPages}
+                currentPage={pdfCurrentPage}
+                onPageClick={(pageNum) => {
+                  pdfViewerRef.current?.navigation?.goToPage(pageNum);
+                }}
+                onClose={() => setShowThumbnails(false)}
+              />
+            )}
+            {/* Main Viewer area */}
+            <Box sx={{ flexGrow: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {pdfBuffer && <SearchComponent viewerRef={pdfViewerRef} />}
+              <div style={{ flexGrow: 1, height: pdfBuffer ? 'calc(100% - 60px)' : '100%', overflow: 'hidden' }}>
+                <PDFViewer
+                  ref={pdfViewerRef}
+                  pdfBuffer={pdfBuffer}
+                  onPasswordRequest={handlePasswordRequest}
+                  scrollStrategy={scrollStrategy === 'horizontal' ? ScrollStrategy.Horizontal : ScrollStrategy.Vertical}
+                  twoPageMode={twoPageMode}
+                  onPageChange={(page) => setPdfCurrentPage(page)}
+                  enableFormFilling={isFormEditing}
+                  enableFormDesign={isFormDesigning}
+                  onFormStateChange={setFormState}
+                  userDetails={{
+                    name: currentUser.author,
+                    email: currentUser.email,
+                    id: currentUser.id
+                  }}
+                  annotationSelectionMenu={annotationSelectionMenu}
+                  permissions={(disableAnnotations || disablePrint) ? {
+                    enforceDocumentPermissions: true,
+                    overrides: {
+                      modifyAnnotations: !disableAnnotations,
+                      print: !disablePrint,
+                    }
+                  } : undefined}
+                />
+              </div>
+            </Box>
+          </Box>
+
           {/* Selected Annotation Details */}
           {annotationDetails && (
             <Box
               sx={{
+                mt: 2,
                 mb: 1,
                 p: 2,
                 border: 1,
@@ -1767,7 +1813,7 @@ export default function Page() {
 
           {/* All Annotations List with Filters and Pagination */}
           {allAnnotations.length > 0 && (
-            <Box sx={{ mb: 1, border: 1, borderColor: "divider", borderRadius: 1, p: 2 }}>
+            <Box sx={{ mt: 2, mb: 1, border: 1, borderColor: "divider", borderRadius: 1, p: 2 }}>
               {/* Header with Toggle */}
               <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: "bold" }}>
@@ -1931,51 +1977,6 @@ export default function Page() {
               )}
             </Box>
           )}
-
-          <Box sx={{ width: "100%", height: "60vh", border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden", position: 'relative', display: 'flex', flexDirection: 'row' }}>
-            {/* Thumbnail Sidebar */}
-            {showThumbnails && pdfBuffer && (
-              <PdfThumbnailSidebar
-                pdfBuffer={pdfBuffer}
-                totalPages={pdfTotalPages}
-                currentPage={pdfCurrentPage}
-                onPageClick={(pageNum) => {
-                  pdfViewerRef.current?.navigation?.goToPage(pageNum);
-                }}
-                onClose={() => setShowThumbnails(false)}
-              />
-            )}
-            {/* Main Viewer area */}
-            <Box sx={{ flexGrow: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-              {pdfBuffer && <SearchComponent viewerRef={pdfViewerRef} />}
-              <div style={{ flexGrow: 1, height: pdfBuffer ? 'calc(100% - 60px)' : '100%', overflow: 'hidden' }}>
-                <PDFViewer
-                  ref={pdfViewerRef}
-                  pdfBuffer={pdfBuffer}
-                  onPasswordRequest={handlePasswordRequest}
-                  scrollStrategy={scrollStrategy === 'horizontal' ? ScrollStrategy.Horizontal : ScrollStrategy.Vertical}
-                  twoPageMode={twoPageMode}
-                  onPageChange={(page) => setPdfCurrentPage(page)}
-                  enableFormFilling={isFormEditing}
-                  enableFormDesign={isFormDesigning}
-                  onFormStateChange={setFormState}
-                  userDetails={{
-                    name: currentUser.author,
-                    email: currentUser.email,
-                    id: currentUser.id
-                  }}
-                  annotationSelectionMenu={annotationSelectionMenu}
-                  permissions={(disableAnnotations || disablePrint) ? {
-                    enforceDocumentPermissions: true,
-                    overrides: {
-                      modifyAnnotations: !disableAnnotations,
-                      print: !disablePrint,
-                    }
-                  } : undefined}
-                />
-              </div>
-            </Box>
-          </Box>
         </Box>
       </Container>
 

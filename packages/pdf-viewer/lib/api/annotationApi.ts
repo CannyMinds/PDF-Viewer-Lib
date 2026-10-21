@@ -280,30 +280,67 @@ export const createAnnotationApi = (ctx: AnnotationApiContext): AnnotationApi =>
       return true;
     },
     importAnnotations: async (items) => {
-      let success = 0;
-      let failed = 0;
+      // ── Phase 1: prepare every draft before touching the engine ─────────────
+      // Pre-inject the "print" flag so hub.ensurePrintable() finds
+      // flags.print === true on the created DTO and exits early, preventing
+      // the 150 ms delayed update it schedules per annotation — the second
+      // render that causes the off-on flicker seen on file open.
+      let failedPrep = 0;
+      const prepared: Array<{ id: string; pon: number; draft: ReturnType<typeof fromLegacy> & {} }> = [];
+
       for (const item of items) {
         const page = hub.pageByIndex(item.pageIndex);
         const legacy = { ...item.annotation };
+
+        if (Array.isArray(legacy.flags)) {
+          if (!legacy.flags.includes('print')) {
+            legacy.flags = [...legacy.flags, 'print'];
+          }
+        } else {
+          legacy.flags = ['print'];
+        }
+
         const draft = fromLegacy(legacy, page);
         if (!draft) {
-          failed++;
+          failedPrep++;
           continue;
         }
         const id = String(legacy.id ?? (draft as any).nm ?? newId());
         (draft as any).nm = id;
         hub.setExtras(id, legacy);
-        try {
-          await hub.silently([id], () => annotations().create(page.pon as any, draft));
-          success++;
-        } catch (error) {
-          console.error(`[importAnnotations] Failed to import annotation on page ${item.pageIndex}`, error);
-          hub.forget(id);
-          failed++;
-        }
+        prepared.push({ id, pon: page.pon, draft });
       }
+
+      if (prepared.length === 0) {
+        ctx.refresh();
+        return { success: 0, failed: failedPrep };
+      }
+
+      // ── Phase 2: bulk-create under a single silently() call ─────────────────
+      // Registering ALL ids before any create() fires means onEngineEvent()
+      // suppresses every "annotation.created" echo for the whole batch at once
+      // instead of one at a time. Using Promise.allSettled() starts every create
+      // simultaneously so the engine can queue and repaint them together rather
+      // than one canvas update per annotation — eliminating the one-by-one glitch.
+      const allIds = prepared.map(p => p.id);
+      let failedCreate = 0;
+
+      await hub.silently(allIds, async () => {
+        await Promise.allSettled(
+          prepared.map(async ({ id, pon, draft }) => {
+            try {
+              await annotations().create(pon as any, draft);
+            } catch (error) {
+              console.error(`[importAnnotations] Failed to import annotation ${id}`, error);
+              hub.forget(id);
+              failedCreate++;
+            }
+          }),
+        );
+      });
+
       ctx.refresh();
-      return { success, failed };
+      return { success: prepared.length - failedCreate, failed: failedPrep + failedCreate };
     },
 
     // ── locks ─────────────────────────────────────────────────────────────

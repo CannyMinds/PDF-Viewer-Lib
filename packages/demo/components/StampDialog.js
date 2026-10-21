@@ -85,7 +85,17 @@ export default function StampDialog({ open, onClose, onSave, username = "User" }
   const handleSave = () => {
     if (activeTab === 0) {
       const stampDataUrl = generateStampSVG();
-      onSave(stampDataUrl, true);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 200;
+        canvas.height = 100;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const pngDataUrl = canvas.toDataURL("image/png");
+        onSave(pngDataUrl, false);
+      };
+      img.src = stampDataUrl;
     } else {
       if (uploadedImage) {
         onSave(uploadedImage, false);

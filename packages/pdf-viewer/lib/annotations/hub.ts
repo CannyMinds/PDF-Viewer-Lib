@@ -184,7 +184,9 @@ export class AnnotationHub {
   // ── events ──────────────────────────────────────────────────────────────
   subscribe(listener: (event: LegacyAnnotationEvent) => void): () => void {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   private emit(event: LegacyAnnotationEvent) {
@@ -218,7 +220,10 @@ export class AnnotationHub {
         this.known.set(dto.ref.annotObjectNumber, legacy);
         if (created) {
           this.added.add(id);
-          this.ensurePrintable(dto);
+          // Skip the extra print-flag commit for silently imported annotations.
+          if (!this.silent.has(id)) {
+            this.ensurePrintable(dto);
+          }
         }
         if (created && this.silent.has(id)) return;
         if (!created && this.quiet.delete(id)) return;
@@ -245,8 +250,14 @@ export class AnnotationHub {
   private ensurePrintable(dto: AnnotationDTO) {
     const d: any = dto;
     if (d.flags?.hidden || d.flags?.noView) return;
-    // An annotation that already prints and already has a name needs nothing.
-    if (d.flags?.print && d.nm) return;
+    // For stamps: EmbedPDF generates the appearance stream with the embedded image bytes.
+    // Calling annotations.update() without the image source strips the appearance stream,
+    // leaving only an empty rectangle/border. Do not run empty flag updates on stamps.
+    if (d.subtype === "stamp") return;
+    // An annotation that already prints needs nothing. Checking `nm` here would force
+    // unnecessary delayed updates because EmbedPDF tool-created annotations don't have `nm`.
+    const alreadyPrints = d.flags?.print === true || (Array.isArray(d.flags) && d.flags.includes("print"));
+    if (alreadyPrints) return;
     const id = this.idOf(dto);
     this.quiet.add(id);
     const attempt = (triesLeft: number) => {

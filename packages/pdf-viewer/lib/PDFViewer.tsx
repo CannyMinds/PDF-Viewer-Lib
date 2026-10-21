@@ -385,7 +385,7 @@ const ReadyViewer = forwardRef<PDFViewerRef, ReadyProps>(function ReadyViewer(
       {() => (
         <>
           {/* the annotation layer draws annotations, so the page bitmap leaves them out */}
-          <RenderLayer />
+          <RenderLayer annotations={false} />
           <SelectionLayer />
           <SearchLayer />
           <div style={{ position: "absolute", inset: 0, pointerEvents: locked ? "none" : undefined }}>
