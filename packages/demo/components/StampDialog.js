@@ -71,6 +71,28 @@ export default function StampDialog({ open, onClose, onSave, username = "User" }
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   };
 
+  /**
+   * Rasterise an SVG data URL to a PNG data URL via an offscreen canvas.
+   * The PDF engine requires raster image bytes (PNG/JPEG), not SVG text.
+   */
+  const svgToPng = (svgDataUrl) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth || 200;
+        canvas.height = img.naturalHeight || 100;
+        const ctx = canvas.getContext("2d");
+        // Fill white background so the PNG has an opaque background
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = () => reject(new Error("Failed to load SVG for rasterisation"));
+      img.src = svgDataUrl;
+    });
+
   const handleImageUpload = (event) => {
     const file = event.target.files[0];
     if (file) {
@@ -82,10 +104,18 @@ export default function StampDialog({ open, onClose, onSave, username = "User" }
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (activeTab === 0) {
-      const stampDataUrl = generateStampSVG();
-      onSave(stampDataUrl, true);
+      const svgDataUrl = generateStampSVG();
+      try {
+        // Convert SVG → PNG so the PDF engine receives raster image bytes
+        const pngDataUrl = await svgToPng(svgDataUrl);
+        onSave(pngDataUrl, false);
+      } catch (err) {
+        console.error("Failed to rasterise stamp SVG", err);
+        // Fallback: pass the SVG as-is (may fail in the engine)
+        onSave(svgDataUrl, true);
+      }
     } else {
       if (uploadedImage) {
         onSave(uploadedImage, false);
