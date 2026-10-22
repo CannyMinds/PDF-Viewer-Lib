@@ -585,11 +585,13 @@ const PasswordLogic = ({ documentState, documentId, onPasswordRequest }: { docum
  * being made invisible anyway ('hidden' / 'noView'), in which case whether
  * it would print is moot.
  */
-const ensurePrintableFlags = (flags: unknown): unknown => {
-  if (!Array.isArray(flags)) return flags;
-  if (flags.includes('hidden') || flags.includes('noView')) return flags;
-  if (flags.includes('print')) return flags;
-  return [...flags, 'print'];
+const ensurePrintableFlags = (flags: unknown): string[] => {
+  if (Array.isArray(flags)) {
+    if (flags.includes('hidden') || flags.includes('noView')) return flags;
+    if (flags.includes('print')) return flags;
+    return [...flags, 'print'];
+  }
+  return ['print'];
 };
 
 // Internal component that has access to plugin hooks
@@ -745,36 +747,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
     }
   }, [userDetails]);
 
-  // Guarantee every newly-created annotation is printable by default (see
-  // ensurePrintableFlags' doc comment above the component). Catches the case
-  // before any app-level flags-management call (e.g. a consumer computing
-  // engine-enforced read-only/locked flags from its own permission model, or
-  // this component's own note-placement locking just below) ever runs — so
-  // even an unsaved draft downloads/prints correctly, not just saved ones.
-  useEffect(() => {
-    if (!annotation.provides?.onAnnotationEvent) return undefined;
 
-    const unsubscribe = annotation.provides.onAnnotationEvent((event: any) => {
-      if (event?.type !== 'create' || event?.committed === false) return;
-      const ann = event.annotation;
-      if (!ann?.id) return;
-
-      const currentFlags = Array.isArray(ann.flags) ? ann.flags : [];
-      const patched = ensurePrintableFlags(currentFlags) as string[];
-      if (patched === currentFlags) return; // already printable, or deliberately hidden
-
-      const api = annotation.provides as any;
-      if (typeof api?.updateAnnotation !== 'function') return;
-      api.updateAnnotation(ann.pageIndex, ann.id, { flags: patched });
-      if (typeof api.commit === 'function') {
-        api.commit();
-      }
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, [annotation.provides]);
 
   // Handle Ctrl+C for copying selected text
   useEffect(() => {
@@ -1525,13 +1498,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
         try {
           const api = annotation.provides as any;
 
-          // See ensurePrintableFlags' doc comment above: whenever this patch
-          // touches flags at all, make sure it doesn't silently clear the
-          // PDF's Print bit along with it.
-          const finalUpdates =
-            updates && 'flags' in updates
-              ? { ...updates, flags: ensurePrintableFlags(updates.flags) }
-              : updates;
+          const finalUpdates = updates;
 
           if (api.updateAnnotation) {
             api.updateAnnotation(pageIndex, annotationId, finalUpdates);
@@ -1580,13 +1547,22 @@ const PDFContent = forwardRef<PDFViewerRef, {
 
         const api = annotation.provides as any;
 
-        // Pre-process annotations to ensure stamps have robust context data.
-        // For stamps (type 13), if ctx.imageData is missing, inject the imageSrc string.
-        // This addresses issues in the client where ImageData objects might not be available.
+        // Pre-process annotations to ensure stamps have robust context data
+        // and ensure all imported annotations have printable flags set.
         // IMPORTANT: Do NOT overwrite existing ctx.imageData (the demo passes proper ImageData objects)
         const processedAnnotations = annotations.map(item => {
-          if (item.annotation.type === 13) { // Stamp
-            const imageSrc = item.annotation.imageSrc || item.annotation.custom?.imageSrc;
+          const pageIndex = typeof item.annotation?.pageIndex === 'number'
+            ? item.annotation.pageIndex
+            : (typeof item.pageIndex === 'number' ? item.pageIndex : 0);
+          const ann: Record<string, any> = {
+            ...(item.annotation || {}),
+            pageIndex,
+            flags: ensurePrintableFlags(item.annotation?.flags),
+          };
+          const processedItem = { ...item, pageIndex, annotation: ann };
+
+          if (ann.type === 13) { // Stamp
+            const imageSrc = ann.imageSrc || ann.custom?.imageSrc;
 
             // Only enhance if:
             // 1. We have an imageSrc string
@@ -1597,9 +1573,9 @@ const PDFContent = forwardRef<PDFViewerRef, {
               item.ctx.imageData.width;
 
             if (imageSrc && typeof imageSrc === 'string' && !hasProperImageData) {
-              console.log(`[importAnnotations] Enhancing context for stamp ${item.annotation.id?.substring(0, 8)} (no ImageData provided)`);
+              console.log(`[importAnnotations] Enhancing context for stamp ${ann.id?.substring(0, 8)} (no ImageData provided)`);
               return {
-                ...item,
+                ...processedItem,
                 ctx: {
                   ...(item.ctx || {}),
                   // Add string fallbacks for compatibility
@@ -1610,7 +1586,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
               };
             }
           }
-          return item;
+          return processedItem;
         });
 
         let successCount = 0;
@@ -1622,6 +1598,18 @@ const PDFContent = forwardRef<PDFViewerRef, {
             console.log('[importAnnotations] Using native importAnnotations method with processed data');
             const result = await api.importAnnotations(processedAnnotations);
             console.log('[importAnnotations] Native import result:', result);
+
+            // Wait for WASM commit so all annotations & printable flags are synced in PDFium immediately
+            if (api.commit) {
+              try {
+                const commitTask = api.commit();
+                if (commitTask && typeof commitTask.wait === 'function') {
+                  await new Promise<void>((resolve, reject) => commitTask.wait(() => resolve(), (err: any) => reject(err)));
+                }
+              } catch (e) {
+                console.warn('[importAnnotations] Await commit warning:', e);
+              }
+            }
 
             // Force re-render for stamps
             setAnnotationRenderVersion((v) => v + 1);
@@ -1647,6 +1635,17 @@ const PDFContent = forwardRef<PDFViewerRef, {
           } catch (error) {
             console.error(`[importAnnotations] Failed to import annotation on page ${item.pageIndex}`, error);
             failedCount++;
+          }
+        }
+
+        if (api.commit) {
+          try {
+            const commitTask = api.commit();
+            if (commitTask && typeof commitTask.wait === 'function') {
+              await new Promise<void>((resolve, reject) => commitTask.wait(() => resolve(), (err: any) => reject(err)));
+            }
+          } catch (e) {
+            console.warn('[importAnnotations] Fallback commit warning:', e);
           }
         }
 
@@ -1850,9 +1849,10 @@ const PDFContent = forwardRef<PDFViewerRef, {
     print: {
       printWithAnnotations: async () => {
         if (!print.provides) {
-          console.error('Print plugin not available');
+          console.error('[printWithAnnotations] Print plugin not available');
           return;
         }
+
         print.provides.print({ includeAnnotations: true });
       },
       printWithoutAnnotations: async () => {
