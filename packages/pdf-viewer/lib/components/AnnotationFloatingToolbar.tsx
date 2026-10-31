@@ -7,9 +7,15 @@ interface Props {
     pageIndex: number;
     scale: number;
     pageSize?: { width: number; height: number };
+    /**
+     * Lets the host app suppress this toolbar for specific annotations (e.g. sticky
+     * notes that have their own popup, or annotations the current user doesn't own).
+     * Return true to hide the toolbar for the given annotation.
+     */
+    isHidden?: (annotation: AnnotationObject) => boolean;
 }
 
-export const AnnotationFloatingToolbar: React.FC<Props> = ({ annotationPlugin, documentId, pageIndex, scale, pageSize }) => {
+export const AnnotationFloatingToolbar: React.FC<Props> = ({ annotationPlugin, documentId, pageIndex, scale, pageSize, isHidden }) => {
     const [selection, setSelection] = useState<AnnotationObject | null>(null);
 
     // ... (existing useEffect and handleDelete)
@@ -126,6 +132,10 @@ export const AnnotationFloatingToolbar: React.FC<Props> = ({ annotationPlugin, d
     };
 
     if (!selection || !selection.rect || !selection.rect.origin) return null;
+
+    // The selection itself stays intact (so handles/popups driven by it still work);
+    // only the delete toolbar is withheld.
+    if (isHidden && isHidden(selection)) return null;
 
     // Calculate position (Top-Left coordinate system assumed)
     const { x, y } = selection.rect.origin;
