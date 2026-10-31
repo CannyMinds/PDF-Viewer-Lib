@@ -331,6 +331,12 @@ export interface PDFViewerProps {
   onDocumentLoad?: (info: { totalPages: number; currentPage: number }) => void;
   annotationSelectionMenu?: AnnotationSelectionMenu;
   /**
+   * Return true to hide the built-in floating delete toolbar for a given annotation
+   * (e.g. sticky notes that offer their own delete in a popup, or annotations the
+   * current user doesn't own). Selection itself is not affected.
+   */
+  isAnnotationToolbarHidden?: (annotation: any) => boolean;
+  /**
    * Permission configuration for controlling PDF features.
    * Use to override document restrictions for testing or specific use cases.
    */
@@ -601,6 +607,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
   isLoading: boolean;
   hasPassword: boolean;
   annotationSelectionMenu?: AnnotationSelectionMenu;
+  isAnnotationToolbarHidden?: (annotation: any) => boolean;
   pdfBuffer?: Uint8Array | null;
   engine: any;
   documentId: string;
@@ -615,6 +622,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
   isLoading,
   hasPassword,
   annotationSelectionMenu,
+  isAnnotationToolbarHidden,
   pdfBuffer,
   engine,
   documentId,
@@ -652,6 +660,20 @@ const PDFContent = forwardRef<PDFViewerRef, {
   useEffect(() => {
     verifiedTotalPagesRef.current = verifiedTotalPages;
   }, [verifiedTotalPages]);
+
+  // Host-supplied "hide the floating delete toolbar" predicate. Held in a ref behind a
+  // stable wrapper so a new function identity from the host on every render does not
+  // rebuild the page renderer below. A throwing predicate falls back to showing the
+  // toolbar (the previous behaviour) rather than breaking the page.
+  const toolbarHiddenRef = useRef(isAnnotationToolbarHidden);
+  toolbarHiddenRef.current = isAnnotationToolbarHidden;
+  const isToolbarHidden = useCallback((ann: any): boolean => {
+    try {
+      return toolbarHiddenRef.current?.(ann) === true;
+    } catch {
+      return false;
+    }
+  }, []);
 
   // Apply two-page mode and scroll strategy from props inside the document context
   useEffect(() => {
@@ -1958,10 +1980,11 @@ const PDFContent = forwardRef<PDFViewerRef, {
           pageIndex={pageIndex}
           scale={effectiveScale}
           pageSize={{ width: width / effectiveScale, height: height / effectiveScale }}
+          isHidden={isToolbarHidden}
         />
       </div>
     );
-  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom]);
+  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom, isToolbarHidden]);
 
   return (
     <DocumentContent documentId={documentId}>
@@ -2030,7 +2053,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, isAnnotationToolbarHidden, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
   ref
 ): ReactElement | null {
   const {
@@ -2233,6 +2256,7 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
               documentId={activeDocumentId}
               {...(userDetails ? { userDetails } : {})}
               {...(annotationSelectionMenu ? { annotationSelectionMenu } : {})}
+              {...(isAnnotationToolbarHidden ? { isAnnotationToolbarHidden } : {})}
               {...(onPasswordRequest ? { onPasswordRequest } : {})}
               hideInternalLoading={!!hideInternalLoading}
               twoPageMode={twoPageMode}
