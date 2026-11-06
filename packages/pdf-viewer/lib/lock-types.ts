@@ -1,10 +1,9 @@
 /**
  * Local shim for @embedpdf/plugin-annotation v2.14.1 lock-mode types.
  *
- * The local PDF-Viewer-Lib source is still on the v1.3.x plugin baseline
- * (no @embedpdf/plugin-annotation installed). Once the plugin-migration TODO
- * in PDFViewer.tsx is completed and the package is registered, replace usages
- * of these with the real exports:
+ * The runtime is on @embedpdf/plugin-annotation@2.2.0 which doesn't yet expose
+ * LockMode or PdfAnnotationFlagName. Once the plugin set is bumped to 2.14.x,
+ * replace usages of these with the real exports:
  *
  *   import { LockModeType } from '@embedpdf/plugin-annotation';
  *   import type { LockMode } from '@embedpdf/plugin-annotation';

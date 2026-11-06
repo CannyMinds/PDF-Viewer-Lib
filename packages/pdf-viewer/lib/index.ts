@@ -4,15 +4,19 @@ import { usePDFViewer } from './usePDFViewer';
 // Export types
 export type { PDFViewerInstance, PDFViewerHookReturn } from './usePDFViewer';
 export type { PDFError, PDFErrorType } from './utils/errorTypes';
-export type { PDFViewerRef } from './PDFViewer';
+export type { PDFViewerRef, PDFViewerProps, PermissionConfig } from './PDFViewer';
+export { PdfThumbnailSidebar } from './PdfThumbnailSidebar';
+export type { PdfThumbnailSidebarProps } from './PdfThumbnailSidebar';
 
 // Re-export enums from PDFViewer
 export { ZoomMode, Rotation } from './PDFViewer';
+export { ScrollStrategy } from '@embedpdf/plugin-scroll';
 
 // v2.14.1 — annotation lock primitives.
-// Currently sourced from a local shim because the local source is on the v1.3.x
-// plugin baseline. Once the plugin-migration TODO in PDFViewer.tsx is done and
-// @embedpdf/plugin-annotation@2.14.1 is registered, replace these with:
+// Sourced from a local shim because the runtime is on @embedpdf/plugin-annotation@2.2.0,
+// which doesn't yet expose LockMode / isAnnotationInteractive / etc. The ref methods
+// proxy to annotationCap with safe fallbacks (interactive=true, locked=false, no-op).
+// Once the plugin set is bumped to 2.14.x, replace this shim with:
 //   export { LockModeType } from '@embedpdf/plugin-annotation';
 //   export type { LockMode } from '@embedpdf/plugin-annotation';
 //   export { PdfAnnotationFlags, flagsToNames, namesToFlags } from '@embedpdf/models';
