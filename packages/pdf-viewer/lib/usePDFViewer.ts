@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { usePdfiumEngine } from "@embedpdf/engines/react";
+import { usePdfiumEngine } from "./usePdfiumEngine";
 import { createPluginRegistration } from '@embedpdf/core';
 import { DocumentManagerPluginPackage } from "@embedpdf/plugin-document-manager";
 import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
