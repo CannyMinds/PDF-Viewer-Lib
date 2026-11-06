@@ -69,7 +69,7 @@ import {
 } from "react";
 
 
-import { usePdfiumEngine } from "@embedpdf/engines/react";
+import { usePdfiumEngine } from "./usePdfiumEngine";
 import { createPluginRegistration, BasePlugin } from "@embedpdf/core";
 import { AnnotationFloatingToolbar } from "./components/AnnotationFloatingToolbar";
 import { DocumentManagerPluginPackage, DocumentContent, useDocumentManagerCapability } from "@embedpdf/plugin-document-manager/react";
