@@ -3,6 +3,7 @@
 // from a blob: URL. Shipping it as a file lets lib/usePdfiumEngine.ts start
 // it from a real URL instead (see that file for why).
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
@@ -24,5 +25,15 @@ for (const marker of ['self.onmessage', '"wasmInit"', 'PdfiumEngineRunner']) {
   if (!source.includes(marker)) throw new Error(`Extracted PDFium worker source lacks ${marker}`);
 }
 
-writeFileSync(new URL('../dist/pdfium-worker.js', import.meta.url), source);
-console.log(`pdfium-worker.js: ${(source.length / 1024).toFixed(0)} KB from ${enginePath}`);
+// Minified like the rest of the host app's code. The engine inlines this
+// source unminified, with its developer comments, and host apps serve the file
+// as a static asset without minifying it (ZAP flagged the comments as
+// "Information Disclosure - Suspicious Comments"). License comments are kept.
+// esbuild is tsup's own dependency.
+const { transformSync } = createRequire(import.meta.resolve('tsup'))('esbuild');
+const { code: minified } = transformSync(source, { minify: true });
+
+writeFileSync(new URL('../dist/pdfium-worker.js', import.meta.url), minified);
+console.log(
+  `pdfium-worker.js: ${(minified.length / 1024).toFixed(0)} KB (${(source.length / 1024).toFixed(0)} KB before minifying) from ${enginePath}`,
+);
