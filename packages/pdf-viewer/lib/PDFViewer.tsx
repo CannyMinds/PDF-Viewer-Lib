@@ -16,6 +16,7 @@ import {
 } from "@embedpdf/plugin-render/react";
 import { SelectionLayer, useSelectionCapability, SelectionPluginPackage } from "@embedpdf/plugin-selection/react";
 import { SearchLayer } from "@embedpdf/plugin-search/react";
+import { HighlightLayer, type PDFHighlight } from "./components/HighlightLayer";
 import {
   InteractionManagerPluginPackage,
   PagePointerProvider,
@@ -349,6 +350,11 @@ export interface PDFViewerProps {
   twoPageMode?: boolean | undefined;
   scrollStrategy?: ScrollStrategy | undefined;
   onPageChange?: ((page: number) => void) | undefined;
+  /**
+   * Boxes to draw over pages (e.g. where a metadata value was read from). The viewer scrolls to
+   * the first box whenever the set of boxes changes.
+   */
+  highlights?: PDFHighlight[] | undefined;
 }
 
 export interface PDFViewerRef {
@@ -617,6 +623,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
   twoPageMode?: boolean | undefined;
   scrollStrategy?: ScrollStrategy | undefined;
   onPageChange?: ((page: number) => void) | undefined;
+  highlights?: PDFHighlight[] | undefined;
 }>(({
   isReady,
   isLoading,
@@ -631,7 +638,8 @@ const PDFContent = forwardRef<PDFViewerRef, {
   hideInternalLoading,
   twoPageMode,
   scrollStrategy,
-  onPageChange
+  onPageChange,
+  highlights
 }, ref) => {
   // v2.x hooks now require documentId for multi-document support
   const zoom = useZoom(documentId);
@@ -700,6 +708,29 @@ const PDFContent = forwardRef<PDFViewerRef, {
       if (unsubscribe) unsubscribe();
     };
   }, [scroll.provides, onPageChange]);
+
+  // Bring the first highlight into the middle of the view once per new set of highlights
+  // (waits for the document, so highlights passed before it loads still scroll).
+  const highlightKey = highlights && highlights.length ? JSON.stringify(highlights) : '';
+  const scrolledHighlightKey = useRef('');
+  useEffect(() => {
+    if (!highlightKey) {
+      scrolledHighlightKey.current = '';
+      return;
+    }
+    const first = highlights?.[0];
+    const size = first ? docState?.document?.pages?.[first.page - 1]?.size : undefined;
+    if (!first || !size || !scroll.provides || scrolledHighlightKey.current === highlightKey) return;
+    scrolledHighlightKey.current = highlightKey;
+    const [x0, y0, x1, y1] = first.box;
+    scroll.provides.scrollToPage({
+      pageNumber: first.page,
+      pageCoordinates: { x: ((x0 + x1) / 2) * size.width, y: ((y0 + y1) / 2) * size.height },
+      alignX: 50,
+      alignY: 50,
+      behavior: 'smooth',
+    });
+  }, [highlightKey, docState?.document, scroll.provides]);
 
   // Track pending stamp image for placement
   // Track click-to-place callback
@@ -1973,6 +2004,14 @@ const PDFContent = forwardRef<PDFViewerRef, {
               scale={effectiveScale}
             />
           </PagePointerProvider>
+          {highlights && highlights.length ? (
+            <HighlightLayer
+              documentId={documentId}
+              pageIndex={pageIndex}
+              scale={effectiveScale}
+              highlights={highlights}
+            />
+          ) : null}
         </Rotate>
         <AnnotationFloatingToolbar
           annotationPlugin={annotation as any}
@@ -1984,7 +2023,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
         />
       </div>
     );
-  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom, isToolbarHidden]);
+  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom, isToolbarHidden, highlights]);
 
   return (
     <DocumentContent documentId={documentId}>
@@ -2053,7 +2092,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
 });
 
 const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
-  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, isAnnotationToolbarHidden, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange },
+  { pdfBuffer, onPasswordRequest, annotationSelectionMenu, isAnnotationToolbarHidden, userDetails, permissions, hideInternalLoading, twoPageMode, scrollStrategy, onPageChange, highlights },
   ref
 ): ReactElement | null {
   const {
@@ -2262,6 +2301,7 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(function PDFViewer(
               twoPageMode={twoPageMode}
               scrollStrategy={scrollStrategy}
               onPageChange={onPageChange}
+              highlights={highlights}
             />
           </>
         ) : hideInternalLoading ? null : (
