@@ -16,7 +16,7 @@ import {
 } from "@embedpdf/plugin-render/react";
 import { SelectionLayer, useSelectionCapability, SelectionPluginPackage } from "@embedpdf/plugin-selection/react";
 import { SearchLayer } from "@embedpdf/plugin-search/react";
-import { HighlightLayer, type PDFHighlight } from "./components/HighlightLayer";
+import { HighlightLayer, type PDFHighlight, type PDFHighlightAPI } from "./components/HighlightLayer";
 import {
   InteractionManagerPluginPackage,
   PagePointerProvider,
@@ -352,7 +352,7 @@ export interface PDFViewerProps {
   onPageChange?: ((page: number) => void) | undefined;
   /**
    * Boxes to draw over pages (e.g. where a metadata value was read from). The viewer scrolls to
-   * the first box whenever the set of boxes changes.
+   * the `active` box whenever a different box becomes active; other boxes never move the view.
    */
   highlights?: PDFHighlight[] | undefined;
 }
@@ -490,6 +490,8 @@ export interface PDFViewerRef {
     printWithAnnotations: () => Promise<void>;
     printWithoutAnnotations: () => Promise<void>;
   };
+  /** Boxes over pages added and removed from code; drawn together with the `highlights` prop. */
+  highlight: PDFHighlightAPI;
 }
 
 // Helper component to handle password logic without side-effects in render
@@ -709,22 +711,66 @@ const PDFContent = forwardRef<PDFViewerRef, {
     };
   }, [scroll.provides, onPageChange]);
 
-  // Bring the first highlight into the middle of the view once per new set of highlights
-  // (waits for the document, so highlights passed before it loads still scroll).
-  const highlightKey = highlights && highlights.length ? JSON.stringify(highlights) : '';
+  // Highlights added through the ref API, drawn together with the `highlights` prop's boxes.
+  // A focused id is drawn as the active box; every focus() call scrolls to it again.
+  const [apiHighlights, setApiHighlights] = useState<PDFHighlight[]>([]);
+  const apiHighlightsRef = useRef<PDFHighlight[]>([]);
+  const highlightSeq = useRef(0);
+  const [focus, setFocus] = useState<{ id: string | null; n: number }>({ id: null, n: 0 });
+  const highlightApi = useMemo<PDFHighlightAPI>(() => {
+    const commit = (next: PDFHighlight[]) => {
+      apiHighlightsRef.current = next;
+      setApiHighlights(next);
+    };
+    return {
+      add: (input) => {
+        const added = (Array.isArray(input) ? input : [input]).map((h) => ({
+          ...h,
+          id: h.id ?? `highlight-${++highlightSeq.current}`,
+        }));
+        const ids = new Set(added.map((h) => h.id));
+        commit([...apiHighlightsRef.current.filter((h) => !ids.has(h.id as string)), ...added]);
+        return added.map((h) => h.id);
+      },
+      remove: (input) => {
+        const ids = new Set(Array.isArray(input) ? input : [input]);
+        commit(apiHighlightsRef.current.filter((h) => !ids.has(h.id as string)));
+        setFocus((f) => (f.id && ids.has(f.id) ? { id: null, n: f.n } : f));
+      },
+      clear: () => {
+        commit([]);
+        setFocus((f) => ({ id: null, n: f.n }));
+      },
+      focus: (id) => setFocus((f) => ({ id, n: f.n + 1 })),
+      list: () => apiHighlightsRef.current.slice(),
+    };
+  }, []);
+  const allHighlights = useMemo(() => {
+    const merged = [...(highlights || []), ...apiHighlights];
+    return focus.id ? merged.map((h) => (h.id === focus.id ? { ...h, active: true } : h)) : merged;
+  }, [highlights, apiHighlights, focus.id]);
+
+  // Bring the active highlight into the middle of the view once each time another box becomes
+  // active or focus() is called (waits for the document, so a highlight passed before it loads
+  // still scrolls).
+  const activeHighlight =
+    (focus.id ? allHighlights.find((h) => h.id === focus.id) : undefined) ?? allHighlights.find((h) => h.active);
+  const highlightKey = activeHighlight
+    ? JSON.stringify([activeHighlight.page, activeHighlight.box, focus.id ? focus.n : 0])
+    : '';
   const scrolledHighlightKey = useRef('');
   useEffect(() => {
     if (!highlightKey) {
       scrolledHighlightKey.current = '';
       return;
     }
-    const first = highlights?.[0];
-    const size = first ? docState?.document?.pages?.[first.page - 1]?.size : undefined;
-    if (!first || !size || !scroll.provides || scrolledHighlightKey.current === highlightKey) return;
+    const target = activeHighlight;
+    const size = target ? docState?.document?.pages?.[target.page - 1]?.size : undefined;
+    if (!target || !size || !scroll.provides || scrolledHighlightKey.current === highlightKey) return;
     scrolledHighlightKey.current = highlightKey;
-    const [x0, y0, x1, y1] = first.box;
+    const [x0, y0, x1, y1] = target.box;
     scroll.provides.scrollToPage({
-      pageNumber: first.page,
+      pageNumber: target.page,
       pageCoordinates: { x: ((x0 + x1) / 2) * size.width, y: ((y0 + y1) / 2) * size.height },
       alignX: 50,
       alignY: 50,
@@ -1916,7 +1962,8 @@ const PDFContent = forwardRef<PDFViewerRef, {
         print.provides.print({ includeAnnotations: false });
       },
     },
-  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool, verifiedTotalPages, docState]);
+    highlight: highlightApi,
+  }), [zoom, search, scroll, rotate, annotation, print, engine, pdfBuffer, isReady, isLoading, hasPassword, ensureStampTool, waitForActiveTool, verifiedTotalPages, docState, highlightApi]);
 
   const currentZoom = zoom.state?.currentZoomLevel || 1;
 
@@ -2004,12 +2051,12 @@ const PDFContent = forwardRef<PDFViewerRef, {
               scale={effectiveScale}
             />
           </PagePointerProvider>
-          {highlights && highlights.length ? (
+          {allHighlights.length ? (
             <HighlightLayer
               documentId={documentId}
               pageIndex={pageIndex}
               scale={effectiveScale}
-              highlights={highlights}
+              highlights={allHighlights}
             />
           ) : null}
         </Rotate>
@@ -2023,7 +2070,7 @@ const PDFContent = forwardRef<PDFViewerRef, {
         />
       </div>
     );
-  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom, isToolbarHidden, highlights]);
+  }, [annotationRenderVersion, annotationSelectionMenu, documentId, currentZoom, isToolbarHidden, allHighlights]);
 
   return (
     <DocumentContent documentId={documentId}>
